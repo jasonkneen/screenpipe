@@ -55,6 +55,20 @@ export const PipeStore: React.FC = () => {
     )
     .sort((a, b) => Number(b.is_paid) - Number(a.is_paid));
 
+  // Add debounced search tracking
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (searchQuery) {
+        posthog.capture("search_pipes", {
+          query: searchQuery,
+          results_count: filteredPipes.length,
+        });
+      }
+    }, 1000); // Debounce for 1 second
+
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery, filteredPipes.length]);
+
   const fetchStorePlugins = async () => {
     try {
       const pipeApi = await PipeApi.create(settings.user?.token!);
@@ -68,6 +82,9 @@ export const PipeStore: React.FC = () => {
           ?.config,
         has_purchased: purchaseHistory.some((p) => p.plugin_id === plugin.id),
         is_core_pipe: corePipes.includes(plugin.name),
+        is_enabled: installedPipes.some(
+          (p) => p.config?.id === plugin.id && p.config?.enabled
+        ),
       }));
 
       const customPipes = installedPipes
@@ -91,6 +108,8 @@ export const PipeStore: React.FC = () => {
             installed_config: p.config,
             has_purchased: true,
             is_core_pipe: false,
+            is_enabled: p.config?.enabled || false,
+            source_code: p.config?.source || "",
           };
         });
 
@@ -231,7 +250,6 @@ export const PipeStore: React.FC = () => {
     onComplete?: () => void
   ) => {
     try {
-
       if (!checkLogin(settings.user)) return;
 
       // Keep the pipe in its current position by updating its status
@@ -821,6 +839,7 @@ export const PipeStore: React.FC = () => {
                 onPurchase={handlePurchasePipe}
                 isLoadingPurchase={loadingPurchases.has(pipe.id)}
                 isLoadingInstall={loadingInstalls.has(pipe.id)}
+                onToggle={handleTogglePipe}
               />
             ))}
           </div>
