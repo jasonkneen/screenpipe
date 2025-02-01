@@ -47,21 +47,9 @@ thiserror = "1"
 
 #opentelemetry
 sentry = { workspace = true }
-opentelemetry = "0.21"
-opentelemetry-appender-tracing = "0.2"
-opentelemetry-otlp = { version = "0.14", features = [
-    "http-proto",
-    "reqwest-rustls",
-    "tokio",
-    "reqwest-client",
-] }
-opentelemetry_sdk = { version = "0.21", default-features = false, features = [
-    "rt-tokio",
-] }
-opentelemetry-semantic-conventions = "0.13"
 
 # Server
-axum = "0.7.5"
+axum = { version = "0.7.5", features = ["ws"]}
 axum-macros = "0.5.0"
 async-stream = "0.3"
 tokio = { version = "1.15", features = ["full", "tracing"] }
@@ -81,9 +69,12 @@ sysinfo = "0.29.0"
 # Color
 colored = "2.0"
 
+# Completions
+clap_complete = "4.2"
+
 # Plugins
 tower = { version = "0.5", features = ["util"] }
-futures = "0.3.17"
+futures = { version = "0.3.31", features = ["std"] }
 
 # Directory management
 dirs = "5.0"
@@ -132,6 +123,8 @@ walkdir = "2.3.4"
 
 regex = "1.10.0"
 
+lru = "0.13.0"
+tokio-util = { version = "0.7", features = ["io"] }
 [dev-dependencies]
 env_logger = "0.10"
 tempfile = "3.3.0"
@@ -166,7 +159,7 @@ path = "src/bin/screenpipe-server.rs"
 
 
 [package.metadata.cargo-machete]
-ignored = ["url", "opentelemetry-appender-tracing"]
+ignored = ["url"]
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal"] }
