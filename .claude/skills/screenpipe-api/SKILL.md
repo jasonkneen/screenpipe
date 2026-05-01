@@ -279,6 +279,53 @@ Returns credentials to use with service APIs directly:
 
 If not connected, tell user to set up in Settings > Connections.
 
+Each entry's `description` field is self-describing — for capabilities that
+need a control surface (browsers, gateways, etc.), the description includes
+the exact endpoint and body shape. Read it before guessing.
+
+### Browser Control — `owned-default`
+
+You have an embedded browser you can drive directly. Three intent verbs;
+reach for `/eval` only when the first two aren't enough.
+
+```bash
+# 1. Navigate — opens the URL in the embedded browser sidebar.
+curl -X POST -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://en.wikipedia.org/wiki/Giraffe"}' \
+  http://localhost:3030/connections/browsers/owned-default/navigate
+# → {"ok": true, "url": "<final-url-after-redirects>"}
+
+# 2. Snapshot — read the page WITHOUT writing JS. Returns title, url, and
+#    a compact accessibility-style outline (headings, links, buttons,
+#    form fields). This is almost always what you want for "what's on
+#    the page?" / "is this still loading?" / "what links are visible?".
+curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+  http://localhost:3030/connections/browsers/owned-default/snapshot
+# → {
+#     "title": "Giraffe - Wikipedia",
+#     "url": "https://en.wikipedia.org/wiki/Giraffe",
+#     "tree": "[h1] Giraffe\n  [a] Article → /wiki/Giraffe\n  [a] Talk → /wiki/Talk:Giraffe\n  ...",
+#     "truncated": false
+#   }
+
+# 3. Eval (escape hatch) — run arbitrary JS, get the return value back.
+#    Use this when navigate + snapshot can't express what you need
+#    (e.g. clicking a specific button, reading a table you can't see in
+#    the snapshot tree, scraping with custom selectors).
+curl -X POST -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"code": "return [...document.querySelectorAll(\".title > a\")].slice(0,5).map(a => a.innerText)"}' \
+  http://localhost:3030/connections/browsers/owned-default/eval
+# → {"success": true, "result": [...]}
+```
+
+Default rule: try snapshot first. Switch to eval only when you need a
+specific value the snapshot tree doesn't surface.
+
+Cookies persist across calls (own profile, isolated from the user's
+real browser). Password fields are stripped from snapshot output.
+
 ---
 
 ## 9. Meetings — `GET /meetings`
