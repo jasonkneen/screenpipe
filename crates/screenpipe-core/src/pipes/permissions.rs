@@ -974,5 +974,4 @@ mod tests {
         assert!(perms.is_day_allowed(Weekday::Mon));
         assert!(!perms.is_day_allowed(Weekday::Sat));
     }
-
 }

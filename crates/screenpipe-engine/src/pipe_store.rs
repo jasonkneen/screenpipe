@@ -237,11 +237,10 @@ impl PipeStore for SqlitePipeStore {
         // do `WHERE pipe_name = ? ORDER BY id DESC LIMIT ?` — that one is a
         // direct index seek. Per-pipe queries run concurrently against the
         // read pool so wall time is the slowest single query, not the sum.
-        let names: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT pipe_name FROM pipe_executions",
-        )
-        .fetch_all(&self.db.pool)
-        .await?;
+        let names: Vec<String> =
+            sqlx::query_scalar("SELECT DISTINCT pipe_name FROM pipe_executions")
+                .fetch_all(&self.db.pool)
+                .await?;
 
         if names.is_empty() {
             return Ok(std::collections::HashMap::new());

@@ -954,6 +954,9 @@ mod tests {
     fn test_should_skip() {
         assert!(should_skip("db.sqlite-wal"));
         assert!(should_skip("db.sqlite-shm"));
+        // Live .sqlite is skipped: the DB ships via VACUUM INTO snapshot
+        // (page-level torn writes mid-SFTP would corrupt a direct copy).
+        assert!(should_skip("db.sqlite"));
         assert!(should_skip("some.lock"));
         assert!(should_skip("node_modules"));
         assert!(should_skip(".git"));
@@ -962,7 +965,6 @@ mod tests {
         assert!(should_skip("target"));
         assert!(should_skip("something.tmp"));
         assert!(should_skip("app.log"));
-        assert!(!should_skip("db.sqlite"));
         assert!(!should_skip("data"));
         assert!(!should_skip("some_audio.mp4"));
     }
