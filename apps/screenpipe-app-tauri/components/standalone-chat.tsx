@@ -2255,7 +2255,7 @@ export function StandaloneChat({
       const pattern = timePatterns[label];
       if (pattern) newInput = newInput.replace(pattern, "").trim();
     } else if (filterType === "content") {
-      newInput = newInput.replace(/@(audio|screen)\b/gi, "").trim();
+      newInput = newInput.replace(/@(audio|screen|input)\b/gi, "").trim();
     } else if (filterType === "app" && activeFilters.appName) {
       // Remove app mention - need to find the pattern
       const appPattern = new RegExp(`@${activeFilters.appName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, "gi");
