@@ -6,11 +6,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
-  ArrowUpRight,
   Calendar,
   Check,
   Clock,
   Loader2,
+  Sparkles,
   Square,
   Trash2,
   Users,
@@ -270,11 +270,26 @@ export function NoteView({
             <ArrowLeft className="h-3.5 w-3.5" />
             meetings
           </Button>
-          {isLive && (
+          {isLive ? (
             <span className="flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-foreground">
               <span className="h-1.5 w-1.5 rounded-full bg-foreground animate-pulse" />
               recording
             </span>
+          ) : (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleSummarize}
+              disabled={summarizing}
+              className="gap-2"
+            >
+              {summarizing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5" />
+              )}
+              summarize with AI
+            </Button>
           )}
         </div>
 
@@ -372,7 +387,7 @@ export function NoteView({
                 </Button>
               ))}
 
-            {isLive ? (
+            {isLive && (
               <Button
                 variant="outline"
                 size="sm"
@@ -386,21 +401,6 @@ export function NoteView({
                   <Square className="h-3.5 w-3.5" />
                 )}
                 stop meeting
-              </Button>
-            ) : (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleSummarize}
-                disabled={summarizing}
-                className="gap-2"
-              >
-                {summarizing ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <ArrowUpRight className="h-3.5 w-3.5" />
-                )}
-                summarize
               </Button>
             )}
           </div>

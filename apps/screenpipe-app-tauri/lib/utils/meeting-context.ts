@@ -296,8 +296,23 @@ export function buildEnrichedSummarizePrompt({
     sections.push(`clipboard activity: ${context.clipboardCount} copy/paste events during meeting`);
   }
 
-  const directive =
-    "search screenpipe for what happened during this meeting and summarize it: key topics, decisions, action items. then suggest which of my connected integrations would be useful to share this with and draft a message for each.";
+  // Prompt gives the agent agency over whether to persist the summary back to
+  // the meeting note. There's no hardcoded subscriber on our end intercepting
+  // the chat reply — the agent decides. If the transcript is empty / nothing
+  // worth saving, it should say so and not write. If there's a useful summary,
+  // it appends under "## Summary" via the same PATCH endpoint the autosave
+  // uses, preserving any handwritten notes the user already has.
+  const directive = [
+    `search screenpipe for what happened during this meeting and summarize it: key topics, decisions, action items. then suggest which of my connected integrations would be useful to share this with and draft a message for each.`,
+    ``,
+    `meeting id: ${meeting.id}`,
+    `if your summary is worth saving, append it to the meeting note via:`,
+    `  curl -s -X PATCH "http://localhost:3030/meetings/${meeting.id}" \\`,
+    `    -H "Authorization: Bearer $SCREENPIPE_API_AUTH_KEY" \\`,
+    `    -H "Content-Type: application/json" \\`,
+    `    -d '{"note": "<EXISTING_NOTE>\\n\\n## Summary\\n<YOUR_SUMMARY>"}'`,
+    `replace <EXISTING_NOTE> with the meeting's current notes (shown above as "notes:" — empty string if none) so you don't overwrite the user's work; just append your summary under a "## Summary" heading. if there's nothing useful to summarize (empty transcript, irrelevant audio), say so out loud and skip the PATCH — don't write a placeholder.`,
+  ].join("\n");
 
   return `${directive}\n\n${sections.join("\n\n")}`;
 }
