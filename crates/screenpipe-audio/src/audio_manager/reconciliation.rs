@@ -198,16 +198,27 @@ pub async fn reconcile_untranscribed(
                     valid_chunks.push(chunk);
                 }
                 Ok(Err(e)) => {
+                    // Treat undecodable as orphan: file is on disk but ffmpeg
+                    // can't read it (corrupt header, partial write, etc.). The
+                    // file won't get better on retry — without orphaning, the
+                    // next reconciliation sweep re-queries the same chunk and
+                    // we loop forever, burning ffmpeg subprocess + transcription
+                    // budget. Observed in the wild: 29 retries over 65 min on
+                    // a single bad chunk, ate noticeable battery.
                     error!(
-                        "reconciliation: failed to read audio for chunk {}: {}",
+                        "reconciliation: failed to read audio for chunk {}, marking orphan for deletion: {}",
                         chunk.id, e
                     );
+                    orphan_chunk_ids.push(chunk.id);
                 }
                 Err(e) => {
+                    // spawn_blocking panicked — the worker died mid-decode.
+                    // Same treatment: orphan to break the retry loop.
                     error!(
-                        "reconciliation: spawn_blocking panicked for chunk {}: {}",
+                        "reconciliation: spawn_blocking panicked for chunk {}, marking orphan for deletion: {}",
                         chunk.id, e
                     );
+                    orphan_chunk_ids.push(chunk.id);
                 }
             }
         }
