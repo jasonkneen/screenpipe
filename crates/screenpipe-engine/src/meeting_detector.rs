@@ -2260,6 +2260,16 @@ pub async fn run_meeting_detection_loop(
             }
         }
 
+        // Skip if the screen is locked. AX queries against meeting apps return
+        // nothing useful when the user is away from the keyboard, and they are
+        // the most expensive operation in this loop on macOS. State stays put
+        // — if we were Active, we resume Active on unlock; the next scan
+        // re-evaluates from reality. Linux never sets this flag (only wake is
+        // tracked there), so this is a no-op on Linux.
+        if crate::sleep_monitor::screen_is_locked() {
+            continue;
+        }
+
         // Build active tracking from the current state so find_running_meeting_apps
         // keeps scanning a browser process even after the tab title changes.
         let tracking = get_active_tracking(&state, &profiles);
