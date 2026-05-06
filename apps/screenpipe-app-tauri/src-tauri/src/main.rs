@@ -555,12 +555,16 @@ async fn main() {
     // hit `panic_cannot_unwind` → `abort()`, and the default hook's output may be lost.
     // By logging here we capture the actual panic message for diagnosis.
     //
-    // Truncate the crash log at startup so it only contains panics from THIS launch.
-    // The hook appends (not truncates) so that both the original panic and the
-    // subsequent panic_cannot_unwind are preserved in the same file.
+    // Rotate the crash log on startup (don't truncate). Relaunch after a crash
+    // is the common case — truncating loses the message we most need to diagnose.
+    // Previous panic moves to last-panic.log.prev; new file starts empty.
     {
         let log_dir = screenpipe_core::paths::default_screenpipe_data_dir();
-        let _ = std::fs::File::create(log_dir.join("last-panic.log")); // truncate
+        let cur = log_dir.join("last-panic.log");
+        let prev = log_dir.join("last-panic.log.prev");
+        if cur.exists() {
+            let _ = std::fs::rename(&cur, &prev);
+        }
     }
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
