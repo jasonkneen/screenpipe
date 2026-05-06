@@ -304,20 +304,17 @@ impl TreeWalkerPlatform for WindowsTreeWalker {
         );
 
         // Windows walker doesn't have timeout-based truncation yet — report as complete
+        // Per-app document_path resolution from on-disk state files
+        // (Obsidian config + VS Code-fork state.vscdb). Returns None
+        // for any unknown app or any failure — never panics.
+        let document_path = super::electron_docs::resolve_electron_doc_path(&app_name.to_lowercase());
         Ok(TreeWalkResult::Found(TreeSnapshot {
             app_name,
             window_name,
             text_content: text_buffer,
             nodes,
             browser_url,
-            // Document path extraction not yet implemented on Windows. UIA
-            // exposes per-element values via the Value pattern but the
-            // window-level "current document" notion is editor-specific
-            // (Notepad++ via the title, VS Code/Electron via no native
-            // signal at all). Rather than ship a fragile per-app heuristic,
-            // we leave this None so callers fall back to window_name and
-            // we can implement it cleanly later.
-            document_path: None,
+            document_path,
             timestamp: Utc::now(),
             node_count,
             walk_duration,

@@ -19,10 +19,17 @@
 //! lives. Reads are cached behind a short TTL so a burst of captures
 //! while editing the same file is effectively free.
 //!
-//! Cross-platform: paths in this module are macOS-only for now.
-//! Obsidian on Linux/Windows uses different config locations
-//! (`~/.config/obsidian/`, `%APPDATA%/obsidian/`); extending is
-//! mechanical when those backends materialize.
+//! Cross-platform: state files live under [`dirs::config_dir`] on every
+//! supported OS — `~/Library/Application Support` (macOS), `%APPDATA%`
+//! (Windows, i.e. `C:\Users\<user>\AppData\Roaming`), `~/.config`
+//! (Linux). Snap / Flatpak Linux installs use different roots (e.g.
+//! `~/snap/code/common/.config/Code/`) and are not covered yet — those
+//! editors return `None` and the column stays NULL.
+//!
+//! Safety: every public entry point is wrapped in [`std::panic::catch_unwind`]
+//! so a malformed state file (or any other future bug) silently returns
+//! `None` instead of panicking the engine thread. Recursive JSON walks
+//! are depth-bounded for the same reason.
 
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -30,23 +37,49 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tracing::debug;
 
+/// Maximum recursion depth when walking Obsidian's `workspace.json`
+/// tree to find the active leaf. Real Obsidian workspaces are 3-5
+/// nodes deep; the cap exists purely to make a malicious / corrupt
+/// file unable to overflow the stack.
+const MAX_JSON_DEPTH: usize = 64;
+
 /// How long to trust a cached read of a state file before re-checking
 /// disk. Short enough that switching files in Obsidian reflects within
 /// one capture interval; long enough that a burst of walks while
 /// editing the same file is one IO.
 const CACHE_TTL: Duration = Duration::from_millis(800);
 
-/// Top-level dispatcher. `app_lower` is the lowercased
-/// `NSRunningApplication.localizedName` from the AX walk caller.
-/// Returns `None` for unknown apps so the AX walker can fall through
-/// to its default (no document_path) behavior.
+/// Top-level dispatcher. `app_lower` is the lowercased focused-app
+/// name from the platform's tree walker (NSRunningApplication on
+/// macOS, the window-process name on Windows, AT-SPI app name on
+/// Linux). Returns `None` for unknown apps so the caller can fall
+/// through to its default (no document_path) behavior.
 ///
 /// Adding a new editor: pick the resolver, map the app name(s).
 /// Multiple display names map to the same fork resolver — VS Code,
 /// Cursor, Windsurf, VSCodium and Trae all share the same VS Code
 /// codebase and on-disk state layout, only the support-dir name
 /// differs.
+///
+/// **Safety:** wrapped in [`std::panic::catch_unwind`] so a corrupt
+/// state file, sqlite read fault, or any future bug returns `None`
+/// instead of unwinding into the engine's hot capture loop. Cost is
+/// negligible — `catch_unwind` is essentially free on the happy path.
 pub(super) fn resolve_electron_doc_path(app_lower: &str) -> Option<String> {
+    let app_owned = app_lower.to_string();
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        resolve_electron_doc_path_inner(&app_owned)
+    }))
+    .unwrap_or_else(|_| {
+        debug!(
+            "electron_docs: resolver panicked for app '{}', returning None",
+            app_lower
+        );
+        None
+    })
+}
+
+fn resolve_electron_doc_path_inner(app_lower: &str) -> Option<String> {
     if app_lower == "obsidian" {
         return obsidian::active_path();
     }
@@ -63,9 +96,11 @@ mod obsidian {
     /// currently-focused leaf of the active Obsidian vault.
     ///
     /// Pipeline:
-    ///   1. `~/Library/Application Support/obsidian/obsidian.json`
-    ///      lists every vault Obsidian knows about. Exactly one has
-    ///      `"open": true` — that's the front vault.
+    ///   1. `<config_dir>/obsidian/obsidian.json` lists every vault
+    ///      Obsidian knows about. Exactly one has `"open": true` —
+    ///      that's the front vault. `<config_dir>` is platform-defined
+    ///      via [`dirs::config_dir`] (`~/Library/Application Support`
+    ///      on macOS, `%APPDATA%` on Windows, `~/.config` on Linux).
     ///   2. `<vault>/.obsidian/workspace.json` records the per-leaf
     ///      view state. Find the leaf whose `id == active`. Its
     ///      `state.state.file` is the path *relative to the vault*.
@@ -91,11 +126,16 @@ mod obsidian {
         out.into_os_string().into_string().ok()
     }
 
+    /// `<config>/obsidian/obsidian.json` where `<config>` resolves to
+    /// the platform's user-config dir:
+    ///   - macOS: `~/Library/Application Support`
+    ///   - Windows: `%APPDATA%` (`C:\Users\<u>\AppData\Roaming`)
+    ///   - Linux: `~/.config` (or `$XDG_CONFIG_HOME`)
+    /// Returns `None` if the dir can't be resolved (rare — happens on
+    /// some headless / weird-env setups). Caller treats that as "no
+    /// Obsidian here" which is the safe default.
     fn obsidian_cfg_path() -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        let mut p = PathBuf::from(home);
-        p.push("Library");
-        p.push("Application Support");
+        let mut p = dirs::config_dir()?;
         p.push("obsidian");
         p.push("obsidian.json");
         Some(p)
@@ -115,6 +155,13 @@ mod obsidian {
     /// markdown file state. Obsidian's workspace tree is small (a few
     /// dozen nodes typical) so a depth-first walk is fine.
     pub(super) fn find_leaf_file(node: &Value, active_id: &str) -> Option<String> {
+        find_leaf_file_inner(node, active_id, 0)
+    }
+
+    fn find_leaf_file_inner(node: &Value, active_id: &str, depth: usize) -> Option<String> {
+        if depth >= MAX_JSON_DEPTH {
+            return None;
+        }
         if let Some(obj) = node.as_object() {
             let is_active_leaf = obj.get("id").and_then(|v| v.as_str()) == Some(active_id)
                 && obj.get("type").and_then(|v| v.as_str()) == Some("leaf");
@@ -133,13 +180,13 @@ mod obsidian {
                 return None;
             }
             for v in obj.values() {
-                if let Some(f) = find_leaf_file(v, active_id) {
+                if let Some(f) = find_leaf_file_inner(v, active_id, depth + 1) {
                     return Some(f);
                 }
             }
         } else if let Some(arr) = node.as_array() {
             for v in arr {
-                if let Some(f) = find_leaf_file(v, active_id) {
+                if let Some(f) = find_leaf_file_inner(v, active_id, depth + 1) {
                     return Some(f);
                 }
             }
@@ -153,7 +200,7 @@ mod obsidian {
 
 pub(super) mod vscode_fork {
     use super::*;
-    use std::process::Command;
+    use rusqlite::{Connection, OpenFlags};
 
     /// Map an app's lowercased display name to the directory it uses
     /// under `~/Library/Application Support/`. All five share the
@@ -203,11 +250,15 @@ pub(super) mod vscode_fork {
         extract_active_fs_path(&value)
     }
 
+    /// `<config>/<support_dir>/User/workspaceStorage`. `<config>`:
+    ///   - macOS: `~/Library/Application Support`
+    ///   - Windows: `%APPDATA%`
+    ///   - Linux: `~/.config`
+    /// VS Code, Cursor, Windsurf, VSCodium, and Trae all use this
+    /// layout on every supported OS — only the support-dir name
+    /// changes between forks, not between platforms.
     fn workspace_storage_root(support_dir: &str) -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        let mut p = PathBuf::from(home);
-        p.push("Library");
-        p.push("Application Support");
+        let mut p = dirs::config_dir()?;
         p.push(support_dir);
         p.push("User");
         p.push("workspaceStorage");
@@ -244,33 +295,54 @@ pub(super) mod vscode_fork {
     /// Read the `memento/workbench.parts.editor` value from a VS
     /// Code-style `state.vscdb` and parse it as JSON.
     ///
-    /// Why subprocess: rusqlite would clash with the workspace's
-    /// existing `libsqlite3-sys` pin (different major version, both
-    /// requesting `bundled`). Spawning `/usr/bin/sqlite3` (ships with
-    /// macOS) avoids the dependency conflict; the cache TTL keeps
-    /// per-walk cost negligible.
+    /// Open mode: URI form with `immutable=1` + `SQLITE_OPEN_READ_ONLY`.
+    /// `immutable` tells SQLite the file will not change while we hold
+    /// the connection — no WAL replay, no SHM/WAL temp files, no
+    /// contention with the editor's own writes. Stronger and safer
+    /// than the `READ_ONLY` flag alone, which still tries to attach to
+    /// any pending WAL on open.
+    ///
+    /// Uses `rusqlite` (bundled SQLite, statically linked into the
+    /// binary). Pinned to the same `libsqlite3-sys` major as the rest
+    /// of the workspace so we don't link two SQLites.
     fn read_vscode_memento(db_path: &PathBuf) -> Option<Value> {
-        // -readonly: never write the WAL, never bump mtime, never
-        // contend with the editor's own writes.
-        let output = Command::new("/usr/bin/sqlite3")
-            .arg("-readonly")
-            .arg(db_path)
-            .arg("SELECT value FROM ItemTable WHERE key='memento/workbench.parts.editor'")
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            debug!(
-                "vscode_fork: sqlite3 read on {} failed: {}",
-                db_path.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-            return None;
-        }
-        let raw = std::str::from_utf8(&output.stdout).ok()?.trim();
+        let uri = format!("file:{}?immutable=1", db_path.display());
+        let conn = match Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                debug!(
+                    "vscode_fork: open {} failed: {}",
+                    db_path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
+        let raw: String = match conn.query_row(
+            "SELECT value FROM ItemTable WHERE key = 'memento/workbench.parts.editor'",
+            [],
+            |row| row.get(0),
+        ) {
+            Ok(s) => s,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return None,
+            Err(e) => {
+                debug!(
+                    "vscode_fork: query on {} failed: {}",
+                    db_path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
         if raw.is_empty() {
             return None;
         }
-        serde_json::from_str(raw).ok()
+        serde_json::from_str(&raw).ok()
     }
 
     fn read_vscode_memento_cached(db_path: &PathBuf) -> Option<Value> {
@@ -419,6 +491,76 @@ mod tests {
         assert_eq!(resolve_electron_doc_path("safari"), None);
         assert_eq!(resolve_electron_doc_path("textedit"), None);
         assert_eq!(resolve_electron_doc_path(""), None);
+    }
+
+    /// Build a minimal `state.vscdb` matching the shape Cursor / VS Code
+    /// produce, and verify our reader returns the active file's fsPath.
+    /// This is the regression test for the v2.4.139 ship-bug: the
+    /// previous shellout returned None on Cursor's real DB, so this
+    /// path silently dropped every editor frame's document_path.
+    #[test]
+    fn vscode_fork_active_path_against_real_sqlite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp
+            .path()
+            .join("Library")
+            .join("Application Support")
+            .join("Cursor")
+            .join("User")
+            .join("workspaceStorage")
+            .join("abc");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        let db_path = ws_dir.join("state.vscdb");
+
+        // Build a memento JSON the resolver should accept: one group
+        // (id=0), one file editor pointing at /tmp/example.md.
+        let memento = serde_json::json!({
+            "editorpart.state": {
+                "activeGroup": 0,
+                "serializedGrid": {
+                    "root": {
+                        "type": "leaf",
+                        "data": {
+                            "id": 0,
+                            "editors": [{
+                                "value": serde_json::to_string(&serde_json::json!({
+                                    "resourceJSON": {
+                                        "scheme": "file",
+                                        "fsPath": "/tmp/example.md"
+                                    }
+                                })).unwrap()
+                            }],
+                            "mru": [0]
+                        }
+                    }
+                }
+            }
+        });
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES ('memento/workbench.parts.editor', ?1)",
+            [serde_json::to_string(&memento).unwrap()],
+        )
+        .unwrap();
+        drop(conn);
+
+        // Drive the public entry point — workspace_storage_root() reads
+        // $HOME, so we override it to our tmp.
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
+        let p = vscode_fork::active_path("Cursor");
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert_eq!(p.as_deref(), Some("/tmp/example.md"));
     }
 
     #[test]

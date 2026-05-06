@@ -32,6 +32,19 @@ regex = "1.10"
 # Clipboard access (native NSPasteboard/Win32/X11 — no subprocess)
 arboard = "3"
 
+# Cross-platform user-config dir for electron_docs path resolution
+# (Obsidian / VS Code fork state files live under `dirs::config_dir()`
+# on every supported OS — `~/Library/Application Support` on macOS,
+# `%APPDATA%` on Windows, `~/.config` on Linux).
+dirs = "5.0"
+
+# VS Code fork document_path resolution reads `state.vscdb` (SQLite).
+# Pinned to 0.29 because that's the last release on libsqlite3-sys 0.26 —
+# same version screenpipe-db pins, so adding this does not pull a second
+# copy of the C library into the workspace. `bundled` ensures we ship our
+# own SQLite on every OS rather than depending on the system's.
+rusqlite = { version = "0.29", features = ["bundled"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 cidre = { version = "0.13", features = ["ax", "cg", "blocks", "ns", "app", "dispatch"] }
 

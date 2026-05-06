@@ -2432,6 +2432,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fallible-iterator"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
+
+[[package]]
+name = "fallible-streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6453,6 +6465,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusqlite"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "549b9d036d571d42e6e85d1c1425e2ac83491075078ca9a15be021c56b1641f2"
+dependencies = [
+ "bitflags 2.11.1",
+ "fallible-iterator",
+ "fallible-streaming-iterator",
+ "hashlink",
+ "libsqlite3-sys",
+ "smallvec 1.15.1",
+]
+
+[[package]]
 name = "russh"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6838,10 +6864,12 @@ dependencies = [
  "chrono",
  "cidre 0.13.1",
  "crossbeam-channel",
+ "dirs 5.0.1",
  "evdev",
  "libc",
  "parking_lot",
  "regex",
+ "rusqlite",
  "screenpipe-core",
  "screenpipe-db",
  "serde",
@@ -6871,7 +6899,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-audio"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "anyhow",
  "audiopipe",
@@ -6932,7 +6960,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-audio-eval"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "anyhow",
  "clap",
@@ -6947,7 +6975,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-config"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -6960,7 +6988,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-connect"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6993,7 +7021,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-core"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "accessibility",
  "accessibility-sys",
@@ -7041,7 +7069,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-db"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7067,7 +7095,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-engine"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7140,7 +7168,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-events"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7158,7 +7186,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-screen"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "accessibility-sys",
  "anyhow",
@@ -7216,7 +7244,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-vault"
-version = "0.3.310"
+version = "0.3.311"
 dependencies = [
  "argon2",
  "chacha20poly1305",

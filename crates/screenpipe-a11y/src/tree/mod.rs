@@ -5,7 +5,11 @@
 //! Accessibility tree walker — periodically walks the macOS AX tree of the focused window,
 //! extracts all visible text, and stores it in the accessibility table.
 
-#[cfg(target_os = "macos")]
+// Cross-platform: Obsidian + VS Code-fork state files live under
+// `dirs::config_dir()` on every supported OS (`~/Library/Application
+// Support` macOS, `%APPDATA%` Windows, `~/.config` Linux). Resolver
+// returns `None` for unknown apps, missing files, or any error — call
+// sites are safe to invoke for every focused frame.
 mod electron_docs;
 #[cfg(target_os = "linux")]
 mod linux;
