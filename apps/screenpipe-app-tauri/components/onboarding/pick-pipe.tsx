@@ -132,7 +132,13 @@ async function installAndEnable(slug: string, retries = 3): Promise<void> {
       throw new Error(`enable ${slug} after install: ${enable2.status}`);
     } catch (err) {
       if (attempt === retries) throw err;
-      console.warn(`pipe ${slug} attempt ${attempt}/${retries} failed, retrying...`, err);
+      // Stringify explicitly: `console.warn(..., err)` collapses Error
+      // instances to `{}` once they hit the Rust log capture (their
+      // useful fields aren't enumerable). This was the source of the
+      // unhelpful "pipe X attempt 1/3 failed, retrying... {}" log lines
+      // we couldn't diagnose for chris@lovephoenixhomes.com on 2026-05-06.
+      const msg = (err as Error)?.stack ?? (err as Error)?.message ?? String(err);
+      console.warn(`pipe ${slug} attempt ${attempt}/${retries} failed, retrying...`, msg);
       await new Promise((r) => setTimeout(r, 2000 * attempt));
     }
   }
@@ -202,7 +208,8 @@ export default function PickPipe() {
           });
         } catch {}
       } catch (err) {
-        console.error("failed to enable pipes:", err);
+        const msg = (err as Error)?.stack ?? (err as Error)?.message ?? String(err);
+        console.error("failed to enable pipes:", msg);
         setError("Couldn't enable — try again or skip");
         setPhase("choose");
         setSelected(null);
@@ -221,7 +228,8 @@ export default function PickPipe() {
     try {
       // best-effort install of default pipe — don't block onboarding completion
       await installAndEnable("todo-list-assistant").catch((e) => {
-        console.warn("failed to install default pipe:", e);
+        const msg = (e as Error)?.stack ?? (e as Error)?.message ?? String(e);
+        console.warn("failed to install default pipe:", msg);
       });
     } catch {}
 

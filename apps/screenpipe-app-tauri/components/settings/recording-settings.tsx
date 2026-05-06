@@ -764,7 +764,8 @@ export function RecordingSettings() {
           false
         );
       } catch (error) {
-        console.error("Failed to load devices:", error);
+        const msg = (error as Error)?.stack ?? (error as Error)?.message ?? String(error);
+        console.error("Failed to load devices:", msg);
       }
     };
 

@@ -97,7 +97,8 @@ export function useSqlAutocomplete(type: "app" | "window" | "url") {
         cache[type] = { data: result, timestamp: Date.now() };
       }
     } catch (error) {
-      console.error("failed to fetch items:", error);
+      const msg = (error as Error)?.stack ?? (error as Error)?.message ?? String(error);
+      console.error("failed to fetch items:", msg);
     } finally {
       setIsLoading(false);
     }

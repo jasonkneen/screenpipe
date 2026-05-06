@@ -26,13 +26,33 @@ pub async fn resolve_api_auth_key(data_dir: &Path, settings_key: Option<&str>) -
 
     // Read the existing secret-store value once — used both as a fallback
     // source and to avoid a no-op write when nothing has changed.
+    //
+    // CRITICAL: distinguish "no row" from "row exists but unreadable". If
+    // `get()` errors (decrypt failure, IO error), we MUST log loudly — the
+    // chain below will fall through to "auto-generate" and silently rotate
+    // the user's API key, breaking every consumer that cached the prior
+    // value (webview, MCP, CLI). Concrete trigger: built-from-source dev
+    // build wrote an encrypted `api_auth_key` whose keychain ACL is scoped
+    // to the dev bundle id; user later switches to the prod build, which
+    // can read the secrets table but the keychain ACL denies the decrypt
+    // for `screenpi.pe`. Result: rotation, mismatched in-memory caches,
+    // 401 storms — observed for chris@lovephoenixhomes.com 2026-05-06.
     let stored_key: Option<String> = if let Some(ref s) = store {
-        s.get("api_auth_key")
-            .await
-            .ok()
-            .flatten()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .filter(|k| !k.is_empty())
+        match s.get("api_auth_key").await {
+            Ok(Some(bytes)) => String::from_utf8(bytes).ok().filter(|k| !k.is_empty()),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::error!(
+                    "api auth: failed to read api_auth_key from secret store — \
+                     resolver will fall through to auto-generate, rotating the \
+                     key out from under cached consumers. Likely cause: keychain \
+                     ACL mismatch (dev↔prod bundle id, recent encryption toggle, \
+                     or revoked keychain item). Error: {}",
+                    e
+                );
+                None
+            }
+        }
     } else {
         None
     };
