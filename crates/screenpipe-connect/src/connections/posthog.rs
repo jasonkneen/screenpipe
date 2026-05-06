@@ -13,7 +13,7 @@ static DEF: IntegrationDef = IntegrationDef {
     name: "PostHog",
     icon: "posthog",
     category: Category::Productivity,
-    description: "Query PostHog analytics — events, insights, cohorts, feature flags. Use the PostHog API with Authorization: Bearer <api_key>. Project-scoped endpoints: GET /api/projects/{project_id}/events/, POST /api/projects/{project_id}/query/. Org endpoints: GET /api/users/@me/.",
+    description: "Query PostHog analytics — events, insights, cohorts, feature flags. Use the PostHog API at https://{host} with Authorization: Bearer <api_key>. Project-scoped endpoints: GET /api/projects/{project_id}/events/, POST /api/projects/{project_id}/query/. Org endpoints: GET /api/users/@me/.",
     fields: &[
         FieldDef {
             key: "api_key",
@@ -29,6 +29,13 @@ static DEF: IntegrationDef = IntegrationDef {
             placeholder: "12345",
             help_url: "https://posthog.com/docs/api#how-to-find-your-project-id",
         },
+        FieldDef {
+            key: "host",
+            label: "Host",
+            secret: false,
+            placeholder: "us.posthog.com",
+            help_url: "https://posthog.com/docs/api#regions",
+        },
     ],
 };
 
@@ -42,7 +49,7 @@ impl Integration for PostHog {
 
     fn proxy_config(&self) -> Option<&'static ProxyConfig> {
         static CFG: ProxyConfig = ProxyConfig {
-            base_url: "https://us.posthog.com",
+            base_url: "https://{host}",
             auth: ProxyAuth::Bearer {
                 credential_key: "api_key",
             },
@@ -59,10 +66,11 @@ impl Integration for PostHog {
     ) -> Result<String> {
         let api_key = require_str(creds, "api_key")?;
         let project_id = require_str(creds, "project_id")?;
+        let host = require_str(creds, "host")?;
         let resp: Value = client
             .get(format!(
-                "https://us.posthog.com/api/projects/{}/",
-                project_id
+                "https://{}/api/projects/{}/",
+                host, project_id
             ))
             .bearer_auth(api_key)
             .send()
@@ -71,6 +79,6 @@ impl Integration for PostHog {
             .json()
             .await?;
         let name = resp["name"].as_str().unwrap_or("unknown");
-        Ok(format!("connected to PostHog project: {}", name))
+        Ok(format!("connected to PostHog project: {} ({})", name, host))
     }
 }
