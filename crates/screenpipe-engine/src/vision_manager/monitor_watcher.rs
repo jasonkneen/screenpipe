@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use screenpipe_events::PermissionKind;
 use screenpipe_screen::monitor::{list_monitors_detailed, MonitorListError};
@@ -57,7 +57,7 @@ pub async fn start_monitor_watcher(
                 permission_denied_logged = false;
             }
             Err(MonitorListError::PermissionDenied) => {
-                error!("Screen recording permission denied. Vision capture is disabled. Grant access in System Settings > Privacy & Security > Screen Recording");
+                warn!("Screen recording permission denied. Vision capture is disabled. Grant access in System Settings > Privacy & Security > Screen Recording");
                 permission_denied_logged = true;
                 permission_monitor::report_state(
                     PermissionKind::ScreenRecording,
@@ -188,7 +188,7 @@ pub async fn start_monitor_watcher(
                 }
                 Err(MonitorListError::PermissionDenied) => {
                     if !permission_denied_logged {
-                        error!("Screen recording permission denied. Vision capture is disabled. Grant access in System Settings > Privacy & Security > Screen Recording");
+                        warn!("Screen recording permission denied. Vision capture is disabled. Grant access in System Settings > Privacy & Security > Screen Recording");
                         permission_denied_logged = true;
                         permission_monitor::report_state(
                             PermissionKind::ScreenRecording,
