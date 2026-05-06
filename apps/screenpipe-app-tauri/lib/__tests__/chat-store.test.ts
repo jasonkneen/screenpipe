@@ -158,6 +158,24 @@ describe("chat-store: stable sort by createdAt", () => {
     expect(ordered.map((s) => s.id)).toEqual(["older", "newer"]);
   });
 
+  it("user-touched chats outrank pipe completions even with older lastUserMessageAt", () => {
+    // Bug: pipe-watch / pipe-run sessions are upserted with
+    // createdAt: Date.now() when they spawn. After they finish they
+    // appear in Recents. Their `createdAt` is more recent than a
+    // user's last user-send timestamp from a few minutes earlier, so
+    // pipes were burying the chat the user just typed in.
+    // Tiered sort fixes this: rows with `lastUserMessageAt` set
+    // always rank above rows without one.
+    useChatStore.getState().actions.upsert(
+      baseRecord({ id: "user-chat", createdAt: 100, lastUserMessageAt: 1_000 }),
+    );
+    useChatStore.getState().actions.upsert(
+      baseRecord({ id: "pipe-completion", kind: "pipe-watch", createdAt: 9_000 }),
+    );
+    const ordered = selectOrderedSessions(useChatStore.getState());
+    expect(ordered.map((s) => s.id)).toEqual(["user-chat", "pipe-completion"]);
+  });
+
   it("pinned rows float above unpinned, both sorted by createdAt within group", () => {
     useChatStore.getState().actions.upsert(baseRecord({ id: "p1", createdAt: 100, pinned: true }));
     useChatStore.getState().actions.upsert(baseRecord({ id: "r1", createdAt: 200 }));

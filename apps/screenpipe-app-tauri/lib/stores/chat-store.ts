@@ -582,14 +582,23 @@ function sortKey(s: SessionRecord): number {
   return s.lastUserMessageAt ?? s.createdAt;
 }
 
+/** Tier: user-touched chats (any lastUserMessageAt set) sit above
+ *  auto-generated rows (pipe-watch / pipe-run completions). Without
+ *  this, a pipe that finished 30 s ago would outrank a chat the user
+ *  typed in 2 min ago — `createdAt` of a fresh pipe session is more
+ *  recent than the user's last bump. Lower tier = higher in list. */
+function tier(s: SessionRecord): number {
+  return s.lastUserMessageAt ? 0 : 1;
+}
+
+function compareForSidebar(a: SessionRecord, b: SessionRecord): number {
+  return tier(a) - tier(b) || sortKey(b) - sortKey(a);
+}
+
 export function selectOrderedSessions(state: ChatStore): SessionRecord[] {
   const all = Object.values(state.sessions);
-  const pinned = all
-    .filter((s) => s.pinned)
-    .sort((a, b) => sortKey(b) - sortKey(a));
-  const recents = all
-    .filter((s) => !s.pinned)
-    .sort((a, b) => sortKey(b) - sortKey(a));
+  const pinned = all.filter((s) => s.pinned).sort(compareForSidebar);
+  const recents = all.filter((s) => !s.pinned).sort(compareForSidebar);
   return [...pinned, ...recents];
 }
 
@@ -604,12 +613,8 @@ export function useOrderedSessions(): SessionRecord[] {
   const sessionsMap = useChatStore((s) => s.sessions);
   return useMemo(() => {
     const all = Object.values(sessionsMap);
-    const pinned = all
-      .filter((s) => s.pinned)
-      .sort((a, b) => sortKey(b) - sortKey(a));
-    const recents = all
-      .filter((s) => !s.pinned)
-      .sort((a, b) => sortKey(b) - sortKey(a));
+    const pinned = all.filter((s) => s.pinned).sort(compareForSidebar);
+    const recents = all.filter((s) => !s.pinned).sort(compareForSidebar);
     return [...pinned, ...recents];
   }, [sessionsMap]);
 }
