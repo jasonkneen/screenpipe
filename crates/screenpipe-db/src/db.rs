@@ -31,8 +31,8 @@ use crate::{
     text_similarity::is_similar_transcription, AudioChunksResponse, AudioDevice, AudioEntry,
     AudioResult, AudioResultRaw, ContentType, DeviceType, Element, ElementRow, ElementSource,
     FrameData, FrameRow, FrameRowLight, FrameWindowData, InsertUiEvent, MeetingRecord,
-    MemoryRecord, OCREntry, OCRResult, OCRResultRaw, OcrEngine, OcrTextBlock, Order, SearchMatch,
-    SearchMatchGroup, SearchResult, Speaker, TagContentType, TextBounds, TextPosition,
+    MemoryRecord, MemorySyncRow, OCREntry, OCRResult, OCRResultRaw, OcrEngine, OcrTextBlock, Order,
+    SearchMatch, SearchMatchGroup, SearchResult, Speaker, TagContentType, TextBounds, TextPosition,
     TimeSeriesChunk, UiContent, UiEventRecord, UiEventRow, VideoMetadata,
 };
 
@@ -512,10 +512,7 @@ impl DatabaseManager {
     /// the cross-device memories sync feature, so DBs that upgraded across
     /// the migration boundary without applying it converge on next launch.
     async fn ensure_memories_sync_columns(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-        let cols: &[(&str, &str)] = &[
-            ("sync_uuid", "TEXT"),
-            ("sync_modified_by", "TEXT"),
-        ];
+        let cols: &[(&str, &str)] = &[("sync_uuid", "TEXT"), ("sync_modified_by", "TEXT")];
         for (col_name, col_type) in cols {
             let row: (i64,) = sqlx::query_as(
                 "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?1",
@@ -8038,6 +8035,142 @@ LIMIT ? OFFSET ?
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    // -- memories cross-device sync helpers --
+    //
+    // The HTTP layer + background loop in screenpipe-engine/src/memories_sync.rs
+    // calls these to read all rows for the manifest, mint sync_uuids on first
+    // publish, and apply remote rows back into the local table. Conflict
+    // resolution (LWW) lives in screenpipe-core::memories::sync and is pure;
+    // these are the I/O endpoints.
+
+    /// Read every memory + its sync metadata for manifest building.
+    /// Returns the full row including sync_uuid (may be NULL for rows
+    /// born locally that haven't synced yet) and sync_modified_by.
+    pub async fn list_memories_for_sync(&self) -> Result<Vec<MemorySyncRow>, SqlxError> {
+        sqlx::query_as::<_, MemorySyncRow>(
+            "SELECT id, sync_uuid, content, source, source_context, tags, importance, \
+                    created_at, updated_at, sync_modified_by \
+             FROM memories",
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Stamp a freshly-minted sync_uuid + machine id on a row that's
+    /// being published for the first time. No-op if the row was deleted
+    /// while the sync was in flight (id no longer exists).
+    pub async fn set_memory_sync_identity(
+        &self,
+        id: i64,
+        sync_uuid: &str,
+        machine_id: &str,
+    ) -> Result<(), SqlxError> {
+        let mut tx = self.begin_immediate_with_retry().await?;
+        sqlx::query(
+            "UPDATE memories SET sync_uuid = ?1, sync_modified_by = ?2 \
+             WHERE id = ?3 AND sync_uuid IS NULL",
+        )
+        .bind(sync_uuid)
+        .bind(machine_id)
+        .bind(id)
+        .execute(&mut **tx.conn())
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Apply a memory pulled from a remote machine. INSERTs if the
+    /// sync_uuid is unknown locally, UPDATEs the existing row if not.
+    /// Caller is responsible for LWW: this just writes what it's given.
+    /// `frame_id` is intentionally not synced (it's a local FK), so
+    /// imported rows always have NULL frame_id.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_synced_memory(
+        &self,
+        sync_uuid: &str,
+        content: &str,
+        source: &str,
+        source_context: Option<&str>,
+        tags: &str,
+        importance: f64,
+        created_at: &str,
+        updated_at: &str,
+        sync_modified_by: &str,
+    ) -> Result<(), SqlxError> {
+        let mut tx = self.begin_immediate_with_retry().await?;
+        // SQLite's INSERT … ON CONFLICT (sync_uuid) is the cleanest path,
+        // but the unique index is partial (WHERE sync_uuid IS NOT NULL),
+        // and partial indexes can't drive ON CONFLICT in SQLite < 3.40
+        // we don't gate on. Two-step is safer and the table is small.
+        let existing: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM memories WHERE sync_uuid = ?1 LIMIT 1")
+                .bind(sync_uuid)
+                .fetch_optional(&mut **tx.conn())
+                .await?;
+        if let Some((id,)) = existing {
+            sqlx::query(
+                "UPDATE memories SET content = ?1, source = ?2, source_context = ?3, \
+                                     tags = ?4, importance = ?5, created_at = ?6, \
+                                     updated_at = ?7, sync_modified_by = ?8 \
+                 WHERE id = ?9",
+            )
+            .bind(content)
+            .bind(source)
+            .bind(source_context)
+            .bind(tags)
+            .bind(importance)
+            .bind(created_at)
+            .bind(updated_at)
+            .bind(sync_modified_by)
+            .bind(id)
+            .execute(&mut **tx.conn())
+            .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO memories (sync_uuid, content, source, source_context, tags, \
+                                       importance, created_at, updated_at, sync_modified_by) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )
+            .bind(sync_uuid)
+            .bind(content)
+            .bind(source)
+            .bind(source_context)
+            .bind(tags)
+            .bind(importance)
+            .bind(created_at)
+            .bind(updated_at)
+            .bind(sync_modified_by)
+            .execute(&mut **tx.conn())
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Apply a remote tombstone — delete the local row matching the
+    /// uuid. No-op if not found (already deleted, or never synced).
+    pub async fn delete_memory_by_sync_uuid(&self, sync_uuid: &str) -> Result<(), SqlxError> {
+        let mut tx = self.begin_immediate_with_retry().await?;
+        sqlx::query("DELETE FROM memories WHERE sync_uuid = ?1")
+            .bind(sync_uuid)
+            .execute(&mut **tx.conn())
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Look up a memory's sync_uuid by local id. Used by the DELETE
+    /// route to know whether to record a tombstone (skip if NULL —
+    /// the row was never published, so no other device has it).
+    pub async fn get_memory_sync_uuid(&self, id: i64) -> Result<Option<String>, SqlxError> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT sync_uuid FROM memories WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(u,)| u))
     }
 
     #[allow(clippy::too_many_arguments)]

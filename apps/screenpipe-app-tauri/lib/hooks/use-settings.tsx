@@ -194,6 +194,10 @@ export type Settings = SettingsStore & {
 	cloudArchiveRetentionDays?: number;
 	/** Sync pipe configurations across devices (requires cloud sync subscription) */
 	pipeSyncEnabled?: boolean;
+	/** Sync memories (facts, preferences, decisions, insights) across devices.
+	 * Independent of pipeSyncEnabled — a user might want their memories on
+	 * every device but keep pipes device-local, or vice versa. Pro-gated. */
+	memoriesSyncEnabled?: boolean;
 	/** OpenAI-compatible transcription endpoint URL */
 	openaiCompatibleEndpoint?: string;
 	/** OpenAI-compatible transcription API key */

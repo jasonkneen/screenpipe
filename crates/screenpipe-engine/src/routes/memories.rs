@@ -165,7 +165,8 @@ pub(crate) async fn create_memory_handler(
     validate_tags(&payload.tags)?;
 
     let tags_json = serde_json::to_string(&payload.tags).unwrap_or_else(|_| "[]".to_string());
-    let source_context_json = payload.source_context.map(|v| v.to_string());
+    let enriched_ctx = enrich_source_context_with_device(payload.source_context);
+    let source_context_json = enriched_ctx.map(|v| v.to_string());
 
     let id = state
         .db
@@ -294,7 +295,14 @@ pub(crate) async fn update_memory_handler(
     let tags_json = payload
         .tags
         .map(|t| serde_json::to_string(&t).unwrap_or_else(|_| "[]".to_string()));
-    let source_context_json = payload.source_context.map(|v| v.to_string());
+    // Re-stamp `_device` on update so a row whose source_context is replaced
+    // by a caller (UI, pipe) doesn't lose its provenance. If the caller
+    // didn't pass source_context at all, leave the existing DB row alone.
+    let source_context_json = payload.source_context.map(|v| {
+        enrich_source_context_with_device(Some(v))
+            .unwrap()
+            .to_string()
+    });
 
     state
         .db
@@ -328,12 +336,21 @@ pub(crate) async fn delete_memory_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<JsonResponse<Value>, (StatusCode, JsonResponse<Value>)> {
+    // If this row was already published to the cloud sync, remember the
+    // sync_uuid before we drop the row so the next push can publish a
+    // tombstone. Reads should never block the delete on failure — a
+    // missing tombstone means the deletion only takes effect locally,
+    // which is the safer outcome.
+    let sync_uuid = state.db.get_memory_sync_uuid(id).await.ok().flatten();
+
     state.db.delete_memory(id).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             JsonResponse(json!({"error": e.to_string()})),
         )
     })?;
+
+    crate::sync_api::record_memory_tombstone(&state.screenpipe_dir, sync_uuid.as_deref());
 
     Ok(JsonResponse(json!({"ok": true})))
 }
@@ -349,4 +366,88 @@ pub(crate) async fn list_memory_tags_handler(
         )
     })?;
     Ok(JsonResponse(tags))
+}
+
+/// Stamp the originating device's stable id into a memory's
+/// `source_context` JSON. Three input shapes:
+///
+///   * `None` / `Value::Null` → `{"_device":"<machine_id>"}` (no original
+///     context to merge with).
+///   * `Value::Object(map)` → original keys preserved, `_device` added.
+///     If the caller already provided a `_device` key (rare — typically
+///     pipes don't), we overwrite it: trust the local server, not the
+///     client.
+///   * Anything else (string, number, array, bool) → wrap as
+///     `{"_value": <original>, "_device":"<machine_id>"}` so downstream
+///     consumers always see an object and can rely on `.["_device"]`.
+///
+/// We use the underscore prefix to distinguish system-managed fields
+/// from caller-provided keys; pipes that read source_context can keep
+/// reading their own keys and ignore anything starting with `_`.
+///
+/// Returns `None` only if `get_or_create_machine_id` fails to produce
+/// a stable id, which in practice never happens — the helper falls
+/// back to a fresh UUID v4 it persists. So this function effectively
+/// always returns `Some`.
+fn enrich_source_context_with_device(ctx: Option<Value>) -> Option<Value> {
+    let machine_id = screenpipe_core::sync::get_or_create_machine_id();
+    let enriched = match ctx {
+        None | Some(Value::Null) => json!({"_device": machine_id}),
+        Some(Value::Object(mut map)) => {
+            map.insert("_device".to_string(), Value::String(machine_id));
+            Value::Object(map)
+        }
+        Some(other) => json!({"_value": other, "_device": machine_id}),
+    };
+    Some(enriched)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enrich_none_creates_device_object() {
+        let v = enrich_source_context_with_device(None).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(obj.get("_device").and_then(|v| v.as_str()).is_some());
+        assert_eq!(obj.len(), 1);
+    }
+
+    #[test]
+    fn enrich_object_preserves_caller_keys() {
+        let v = enrich_source_context_with_device(Some(json!({
+            "pipe_run_id": "abc",
+            "trigger": "manual"
+        })))
+        .unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.get("pipe_run_id").and_then(|v| v.as_str()), Some("abc"));
+        assert_eq!(obj.get("trigger").and_then(|v| v.as_str()), Some("manual"));
+        assert!(obj.get("_device").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[test]
+    fn enrich_overwrites_caller_provided_device() {
+        // A malicious or buggy caller can't impersonate another machine —
+        // server-side machine_id always wins.
+        let v = enrich_source_context_with_device(Some(json!({
+            "_device": "fake-id"
+        })))
+        .unwrap();
+        let device = v.get("_device").and_then(|v| v.as_str()).unwrap();
+        assert_ne!(device, "fake-id");
+    }
+
+    #[test]
+    fn enrich_wraps_non_object_value() {
+        // Pipes that pass a bare string get wrapped, not silently lost.
+        let v = enrich_source_context_with_device(Some(json!("raw note text"))).unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(
+            obj.get("_value").and_then(|v| v.as_str()),
+            Some("raw note text")
+        );
+        assert!(obj.get("_device").and_then(|v| v.as_str()).is_some());
+    }
 }

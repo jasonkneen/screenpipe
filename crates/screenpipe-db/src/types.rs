@@ -198,6 +198,24 @@ pub struct MemoryRecord {
     pub updated_at: String,
 }
 
+/// A memory row + the columns the cross-device sync layer needs.
+/// Used only by [`DatabaseManager::list_memories_for_sync`] — the
+/// HTTP/UI surface keeps using [`MemoryRecord`] to avoid leaking
+/// sync state into the public API.
+#[derive(Debug, FromRow, Clone)]
+pub struct MemorySyncRow {
+    pub id: i64,
+    pub sync_uuid: Option<String>,
+    pub content: String,
+    pub source: String,
+    pub source_context: Option<String>,
+    pub tags: Option<String>,
+    pub importance: f64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub sync_modified_by: Option<String>,
+}
+
 #[derive(OaSchema, Debug, Serialize, Deserialize, FromRow, Clone)]
 pub struct MeetingRecord {
     pub id: i64,

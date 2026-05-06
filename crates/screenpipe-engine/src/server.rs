@@ -612,6 +612,8 @@ impl SCServer {
             .post("/sync/download", sync_api::sync_download)
             .post("/sync/pipes/push", sync_api::sync_pipes_push)
             .post("/sync/pipes/pull", sync_api::sync_pipes_pull)
+            .post("/sync/memories/push", sync_api::sync_memories_push)
+            .post("/sync/memories/pull", sync_api::sync_memories_pull)
             // Cloud Archive API routes
             .post("/archive/init", crate::archive::archive_init)
             .post("/archive/configure", crate::archive::archive_configure)

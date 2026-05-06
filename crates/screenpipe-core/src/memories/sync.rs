@@ -126,8 +126,7 @@ pub fn merge_manifests(
     let mut actions = Vec::new();
     let now = Utc::now();
 
-    let mut all_uuids: std::collections::HashSet<String> =
-        local.memories.keys().cloned().collect();
+    let mut all_uuids: std::collections::HashSet<String> = local.memories.keys().cloned().collect();
     all_uuids.extend(remote.memories.keys().cloned());
 
     for uuid in &all_uuids {
@@ -212,7 +211,9 @@ fn parse_rfc3339(s: &str) -> DateTime<Utc> {
 }
 
 fn parse_rfc3339_opt(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
 }
 
 #[cfg(test)]

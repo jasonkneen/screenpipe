@@ -33,6 +33,7 @@ export function AccountSection() {
   const { settings, updateSettings, loadUser } = useSettings();
   const [isAnnual, setIsAnnual] = useState(true);
   const [pipeSyncing, setPipeSyncing] = useState(false);
+  const [memoriesSyncing, setMemoriesSyncing] = useState(false);
 
   useEffect(() => {
     if (!settings.user?.email) {
@@ -308,6 +309,62 @@ export function AccountSection() {
                     }}
                   >
                     <RefreshCw className={`h-3 w-3 mr-1 ${pipeSyncing ? "animate-spin" : ""}`} />
+                    sync now
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Memories sync — independent toggle. A user might keep pipes
+              device-local but want their memories everywhere, or vice versa. */}
+          <div className="mt-4 pt-4 border-t border-border/50">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">memories sync across devices</p>
+                <p className="text-xs text-muted-foreground">
+                  sync your memories (facts, preferences, decisions) across devices
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <Switch
+                    id="memories-sync-toggle"
+                    checked={!!settings.memoriesSyncEnabled}
+                    onCheckedChange={async (checked) => {
+                      await updateSettings({ memoriesSyncEnabled: checked });
+                      toast({
+                        title: checked ? "memories sync enabled" : "memories sync disabled",
+                        description: checked
+                          ? "memories will sync across your devices"
+                          : "memories will no longer sync",
+                      });
+                    }}
+                  />
+                  <Label htmlFor="memories-sync-toggle" className="text-xs text-muted-foreground cursor-pointer sr-only">
+                    sync
+                  </Label>
+                </div>
+                {settings.memoriesSyncEnabled && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs uppercase tracking-wide"
+                    disabled={memoriesSyncing}
+                    onClick={async () => {
+                      setMemoriesSyncing(true);
+                      try {
+                        await localFetch("/sync/memories/pull", { method: "POST" });
+                        await localFetch("/sync/memories/push", { method: "POST" });
+                        toast({ title: "memories synced" });
+                      } catch (e: any) {
+                        toast({ title: "sync failed", description: e.message, variant: "destructive" });
+                      } finally {
+                        setMemoriesSyncing(false);
+                      }
+                    }}
+                  >
+                    <RefreshCw className={`h-3 w-3 mr-1 ${memoriesSyncing ? "animate-spin" : ""}`} />
                     sync now
                   </Button>
                 )}
