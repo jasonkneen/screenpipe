@@ -565,6 +565,21 @@ async fn fetch_provider_identity(
                 .ok()?;
             resp["name"].as_str().map(String::from)
         }
+        "vercel" => {
+            let resp: serde_json::Value = client
+                .get("https://api.vercel.com/v2/user")
+                .bearer_auth(access_token)
+                .send()
+                .await
+                .ok()?
+                .json()
+                .await
+                .ok()?;
+            resp["user"]["email"]
+                .as_str()
+                .or_else(|| resp["user"]["username"].as_str())
+                .map(String::from)
+        }
         _ => None,
     }
 }
