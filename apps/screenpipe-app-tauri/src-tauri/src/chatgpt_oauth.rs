@@ -18,8 +18,6 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::sqlite::SqliteConnectOptions;
-use std::str::FromStr;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -50,20 +48,24 @@ pub struct ChatGptOAuthStatus {
 }
 
 /// Open a connection to the secrets store (same DB as the screenpipe server).
+///
+/// Uses the same `?mode=rwc` URI pattern as `oauth.rs` and the engine's
+/// `auth_key.rs` — that path is known to coexist with the engine's own
+/// pool on the busy main `db.sqlite`. The previous `SqliteConnectOptions`
+/// builder path failed intermittently with "failed to create secrets
+/// table" against a healthy on-disk schema, hiding the real sqlx error
+/// behind anyhow's single-line Display. Errors here use `{:#}` so the
+/// full chain (e.g. `database is locked`, `connection refused`, `unable
+/// to open database file`) reaches the log instead of the generic
+/// top-level wrapper.
 async fn open_secret_store() -> Result<screenpipe_secrets::SecretStore, String> {
     let data_dir = screenpipe_core::paths::default_screenpipe_data_dir();
     let db_path = data_dir.join("db.sqlite");
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
-    // Use SqliteConnectOptions so busy_timeout is set correctly via PRAGMA,
-    // not just as an unrecognised query parameter.
-    let opts = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))
-        .map_err(|e| format!("invalid db path: {}", e))?
-        .create_if_missing(true)
-        .busy_timeout(std::time::Duration::from_secs(10));
-
-    let pool = sqlx::SqlitePool::connect_with(opts)
+    let pool = sqlx::SqlitePool::connect(&db_url)
         .await
-        .map_err(|e| format!("failed to open db: {}", e))?;
+        .map_err(|e| format!("failed to open db at {}: {}", db_path.display(), e))?;
 
     let secret_key = match crate::secrets::get_key_if_encryption_enabled() {
         crate::secrets::KeyResult::Found(k) => Some(k),
@@ -72,7 +74,7 @@ async fn open_secret_store() -> Result<screenpipe_secrets::SecretStore, String> 
 
     screenpipe_secrets::SecretStore::new(pool, secret_key)
         .await
-        .map_err(|e| format!("failed to init secret store: {}", e))
+        .map_err(|e| format!("failed to init secret store: {:#}", e))
 }
 
 async fn read_tokens_from_store() -> Option<OAuthTokens> {
