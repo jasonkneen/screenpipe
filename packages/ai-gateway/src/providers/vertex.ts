@@ -635,6 +635,23 @@ function unwrapText(text: any, depth: number = 0): string {
 }
 
 /**
+ * Sanitize a tool_use / tool_result identifier so it matches Anthropic's
+ * `^[a-zA-Z0-9_-]+$` pattern. Some upstream clients (notably OpenAI-compatible
+ * SDKs and pi-agent variants) generate IDs containing `.`, `:`, or `/`, which
+ * Anthropic rejects with `400 invalid_request_error` on `tool_use.id`.
+ *
+ * Replaces invalid characters with `_` deterministically so a tool_use.id and
+ * its paired tool_result.tool_use_id stay matched after sanitization.
+ */
+export function sanitizeToolUseId(id: unknown): string {
+	if (id === null || id === undefined) return '';
+	const str = String(id);
+	if (!str) return '';
+	if (/^[a-zA-Z0-9_-]+$/.test(str)) return str;
+	return str.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+/**
  * Sanitize a single content block
  * Fixes nested text issues like: {type: 'text', text: {text: '...'}}
  */
@@ -652,17 +669,28 @@ function sanitizeContentBlock(block: any): any {
 	}
 
 	// Handle tool_use blocks - ensure input is parsed if it's a string
-	if (block.type === 'tool_use' && typeof block.input === 'string') {
-		try {
-			block.input = JSON.parse(block.input);
-		} catch (e) {
-			// Keep as-is if not valid JSON
+	// and the id matches Anthropic's required pattern.
+	if (block.type === 'tool_use') {
+		if (typeof block.input === 'string') {
+			try {
+				block.input = JSON.parse(block.input);
+			} catch (e) {
+				// Keep as-is if not valid JSON
+			}
+		}
+		if (block.id !== undefined) {
+			block.id = sanitizeToolUseId(block.id);
 		}
 	}
 
 	// Handle tool_result blocks
-	if (block.type === 'tool_result' && block.content !== undefined) {
-		block.content = sanitizeContent(block.content);
+	if (block.type === 'tool_result') {
+		if (block.content !== undefined) {
+			block.content = sanitizeContent(block.content);
+		}
+		if (block.tool_use_id !== undefined) {
+			block.tool_use_id = sanitizeToolUseId(block.tool_use_id);
+		}
 	}
 
 	return block;
