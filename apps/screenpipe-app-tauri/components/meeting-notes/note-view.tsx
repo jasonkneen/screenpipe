@@ -44,6 +44,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Receipts } from "./receipts";
 import { ReplayStrip } from "./replay-strip";
+import { NoteEditor } from "./note-editor";
 
 const AUTOSAVE_DEBOUNCE_MS = 800;
 
@@ -332,19 +333,15 @@ export function NoteView({
 
         <div className="my-6 border-t border-border" />
 
-        <textarea
+        <NoteEditor
+          key={meeting.id}
           value={note}
-          onChange={(e) => setNote(e.target.value)}
+          onChange={setNote}
           placeholder={
             isLive
               ? "take notes here. they save automatically."
               : "write your notes here…"
           }
-          spellCheck
-          className={cn(
-            "w-full min-h-[40vh] bg-transparent resize-none focus:outline-none",
-            "text-sm leading-relaxed text-foreground placeholder:text-muted-foreground/40",
-          )}
         />
 
         {meetingCtx?.activity && (

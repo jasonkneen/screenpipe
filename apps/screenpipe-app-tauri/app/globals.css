@@ -601,3 +601,13 @@
   color: hsl(var(--muted-foreground)) !important;
 }
 
+
+/* TipTap — show placeholder only on the first empty paragraph of an empty doc.
+   Mirrors the muted-foreground/40 styling we use on native textareas. */
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: hsl(var(--muted-foreground) / 0.4);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
