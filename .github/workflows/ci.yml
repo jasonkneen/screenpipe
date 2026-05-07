@@ -162,21 +162,21 @@ jobs:
           if (-not (Test-Path $dst)) {
             New-Item -ItemType Directory -Path $dst -Force | Out-Null
           }
+          # Always remove + re-copy. Prior cancelled runs could leave
+          # 0-byte stubs that Swatinem/rust-cache preserves across runs;
+          # once cached, every subsequent test binary fails ORT load.
+          # See e2e-test.yml for the same fix in the e2e-windows job.
           Get-ChildItem -Path $src -Filter "onnxruntime*.dll" | ForEach-Object {
             $dest = Join-Path $dst $_.Name
-            try {
-              if ((Test-Path $dest) -and ((Resolve-Path $_.FullName).Path -eq (Resolve-Path $dest).Path)) {
-                Write-Host "skip self-copy: $($_.Name)"
-              } else {
-                Copy-Item -Path $_.FullName -Destination $dest -Force
-              }
-            } catch [System.IO.IOException] {
-              if ($_.Exception.Message -match 'with itself') {
-                Write-Host "skip self-overwrite: $($_.Name)"
-              } else { throw }
-            }
+            if (Test-Path $dest) { Remove-Item -Path $dest -Force }
+            [System.IO.File]::Copy($_.FullName, $dest, $true)
           }
-          Get-ChildItem -Path $dst -Filter "onnxruntime*.dll" | Select-Object Name, Length
+          Get-ChildItem -Path $dst -Filter "onnxruntime*.dll" | ForEach-Object {
+            if ($_.Length -eq 0) {
+              throw "Staged DLL is 0 bytes: $($_.Name) — source likely corrupt"
+            }
+            Write-Host "$($_.Name)  $($_.Length) bytes"
+          }
 
       # Add the ONNX lib dir to PATH for ALL cargo-test steps below.
       # The DLL staging step above does put onnxruntime*.dll next to the

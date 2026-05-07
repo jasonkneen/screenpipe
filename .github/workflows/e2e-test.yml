@@ -158,29 +158,33 @@ jobs:
         if (-not (Test-Path $dst)) {
           New-Item -ItemType Directory -Path $dst -Force | Out-Null
         }
-        # Skip the file if it's already present at $dst with identical
-        # content. The Rust cache + the ONNX cache restore can both put
-        # the same DLL into target/debug across cached runs, and
-        # Copy-Item -Force fails ("Cannot overwrite the item with
-        # itself") instead of being a no-op when source and destination
-        # resolve to the same path. Per-file copy with try/catch lets us
-        # treat self-overwrite as success while still surfacing real
-        # copy failures (permission, disk full, etc.).
+        # Always remove any existing onnxruntime*.dll at the destination
+        # before copying. Why this is necessary: prior cancelled runs
+        # could have left 0-byte stubs at target/debug/onnxruntime*.dll
+        # which Swatinem/rust-cache then preserves across runs — once
+        # cached, every subsequent run inherits the stubs and the test
+        # binary fails to load ORT. Force-copy alone wasn't enough
+        # because the earlier per-file try/catch (with Resolve-Path
+        # comparison) was firing the self-overwrite catch on every
+        # copy under cause-unknown PowerShell path normalization,
+        # silently no-op'ing the actual copy.
+        # Use [System.IO.File]::Copy directly — fewer PowerShell
+        # wrapper quirks than Copy-Item.
         Get-ChildItem -Path $src -Filter "onnxruntime*.dll" | ForEach-Object {
           $dest = Join-Path $dst $_.Name
-          try {
-            if ((Test-Path $dest) -and ((Resolve-Path $_.FullName).Path -eq (Resolve-Path $dest).Path)) {
-              Write-Host "skip self-copy: $($_.Name)"
-            } else {
-              Copy-Item -Path $_.FullName -Destination $dest -Force
-            }
-          } catch [System.IO.IOException] {
-            if ($_.Exception.Message -match 'with itself') {
-              Write-Host "skip self-overwrite: $($_.Name)"
-            } else { throw }
-          }
+          if (Test-Path $dest) { Remove-Item -Path $dest -Force }
+          [System.IO.File]::Copy($_.FullName, $dest, $true)
         }
-        Get-ChildItem -Path $dst -Filter "onnxruntime*.dll" | Select-Object Name, Length
+        # Verify each DLL is non-zero. If any is 0 bytes the test
+        # binary will exit STATUS_DLL_NOT_FOUND (0xc0000135) at load
+        # time — fail here loudly instead of debugging from the
+        # downstream symptom.
+        Get-ChildItem -Path $dst -Filter "onnxruntime*.dll" | ForEach-Object {
+          if ($_.Length -eq 0) {
+            throw "Staged DLL is 0 bytes: $($_.Name) — source likely corrupt"
+          }
+          Write-Host "$($_.Name)  $($_.Length) bytes"
+        }
 
     - name: Run E2E Tests
       shell: pwsh
