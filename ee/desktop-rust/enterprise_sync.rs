@@ -113,6 +113,11 @@ pub struct Cursor {
     pub last_frame_ts: Option<String>,
     /// ISO-8601 UTC. Latest `audio_transcriptions.timestamp` we've ingested.
     pub last_audio_ts: Option<String>,
+    /// ISO-8601 UTC. Latest `ui_events.timestamp` we've ingested.
+    /// Optional in serde to remain backwards-compat with old cursor files
+    /// from before UI events were added.
+    #[serde(default)]
+    pub last_ui_ts: Option<String>,
 }
 
 impl Cursor {
@@ -174,6 +179,20 @@ pub trait LocalApiClient: Send + Sync {
         since_ts: Option<&str>,
         limit: u32,
     ) -> Result<Vec<AudioRow>, EnterpriseSyncError>;
+
+    /// Fetch UI events (clicks, keystrokes, clipboard) since `since_ts`
+    /// (exclusive), ordered ASC, capped at `limit`. UI events give the
+    /// extracted workflows their *verbs* — without them an SOP can only
+    /// say "the user opened Slack", not "the user clicked Send on the
+    /// upgrade-confirmed message". Default empty implementation lets
+    /// older clients ignore this signal.
+    async fn fetch_ui_events_since(
+        &self,
+        _since_ts: Option<&str>,
+        _limit: u32,
+    ) -> Result<Vec<UiEventRow>, EnterpriseSyncError> {
+        Ok(Vec::new())
+    }
 }
 
 // ─── Wire types — what we POST upstream ─────────────────────────────────────
@@ -202,8 +221,31 @@ pub struct AudioRow {
     pub device: Option<String>,
 }
 
+/// One UI event — click, keystroke, focus change, clipboard. The verbs
+/// of any workflow. Coordinates and key codes are deliberately omitted
+/// from sync (privacy + token cost) — what the model actually needs is
+/// "what kind of action, on what element, in what app".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiEventRow {
+    pub event_id: i64,
+    pub timestamp: String,
+    /// e.g. "click", "keypress", "clipboard_copy", "clipboard_paste",
+    /// "text_input", "focus_change". Free-form on the device side.
+    pub event_type: String,
+    pub app_name: Option<String>,
+    pub window_title: Option<String>,
+    pub browser_url: Option<String>,
+    /// Element name from the accessibility tree (e.g. "Submit", "Subject"
+    /// field). Most useful field by far for SOP synthesis.
+    pub element_name: Option<String>,
+    /// Element role from the accessibility tree (e.g. "button", "textfield").
+    pub element_role: Option<String>,
+    /// Text content for text/clipboard events. Truncated upstream.
+    pub text_content: Option<String>,
+}
+
 /// One JSONL line. Tagged enum keeps mixed streams trivially parseable on the
-/// server side — `kind: "frame" | "audio"`.
+/// server side — `kind: "frame" | "audio" | "ui"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TelemetryRecord {
@@ -218,6 +260,12 @@ pub enum TelemetryRecord {
         device_label: String,
         #[serde(flatten)]
         audio: AudioRow,
+    },
+    Ui {
+        device_id: String,
+        device_label: String,
+        #[serde(flatten)]
+        ui: UiEventRow,
     },
 }
 
@@ -239,15 +287,16 @@ pub enum EnterpriseSyncError {
 
 // ─── Pure logic: build the JSONL payload ────────────────────────────────────
 
-/// Serialize a batch of frames + audio rows into JSONL bytes, tagged with the
-/// device's identity. Public for unit tests.
+/// Serialize a batch of frames + audio + UI rows into JSONL bytes, tagged
+/// with the device's identity. Public for unit tests.
 pub fn build_jsonl(
     device_id: &str,
     device_label: &str,
     frames: &[FrameRow],
     audio: &[AudioRow],
+    ui: &[UiEventRow],
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity((frames.len() + audio.len()) * 256);
+    let mut out = Vec::with_capacity((frames.len() + audio.len() + ui.len()) * 256);
     for f in frames {
         let rec = TelemetryRecord::Frame {
             device_id: device_id.to_string(),
@@ -283,6 +332,25 @@ pub fn build_jsonl(
                 warn!(
                     "enterprise sync: failed to serialize audio {}: {}",
                     a.transcription_id, e
+                );
+            }
+        }
+    }
+    for u in ui {
+        let rec = TelemetryRecord::Ui {
+            device_id: device_id.to_string(),
+            device_label: device_label.to_string(),
+            ui: u.clone(),
+        };
+        match serde_json::to_vec(&rec) {
+            Ok(line) => {
+                out.extend_from_slice(&line);
+                out.push(b'\n');
+            }
+            Err(e) => {
+                warn!(
+                    "enterprise sync: failed to serialize ui event {}: {}",
+                    u.event_id, e
                 );
             }
         }
@@ -353,6 +421,10 @@ pub async fn run_one_sync(
         let cutoff = chrono::Utc::now() - chrono::Duration::from_std(SAFE_BACKFILL).unwrap();
         cursor.last_audio_ts = Some(cutoff.to_rfc3339());
     }
+    if cursor.last_ui_ts.is_none() {
+        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(SAFE_BACKFILL).unwrap();
+        cursor.last_ui_ts = Some(cutoff.to_rfc3339());
+    }
 
     let frames = local
         .fetch_frames_since(cursor.last_frame_ts.as_deref(), PAGE_LIMIT)
@@ -360,17 +432,21 @@ pub async fn run_one_sync(
     let audio = local
         .fetch_audio_since(cursor.last_audio_ts.as_deref(), PAGE_LIMIT)
         .await?;
+    let ui = local
+        .fetch_ui_events_since(cursor.last_ui_ts.as_deref(), PAGE_LIMIT)
+        .await?;
 
-    if frames.is_empty() && audio.is_empty() {
+    if frames.is_empty() && audio.is_empty() && ui.is_empty() {
         debug!("enterprise sync: nothing new since last tick");
         return Ok(SyncTickReport {
             frames: 0,
             audio: 0,
+            ui: 0,
             bytes: 0,
         });
     }
 
-    let body = build_jsonl(&cfg.device_id, &cfg.device_label, &frames, &audio);
+    let body = build_jsonl(&cfg.device_id, &cfg.device_label, &frames, &audio, &ui);
     let bytes = body.len();
     post_jsonl(http, &cfg.ingest_url, &cfg.license_key, body).await?;
 
@@ -381,11 +457,15 @@ pub async fn run_one_sync(
     if let Some(latest) = audio.last() {
         cursor.last_audio_ts = Some(latest.timestamp.clone());
     }
+    if let Some(latest) = ui.last() {
+        cursor.last_ui_ts = Some(latest.timestamp.clone());
+    }
     cursor.save(&cfg.cursor_path)?;
 
     Ok(SyncTickReport {
         frames: frames.len(),
         audio: audio.len(),
+        ui: ui.len(),
         bytes,
     })
 }
@@ -394,6 +474,7 @@ pub async fn run_one_sync(
 pub struct SyncTickReport {
     pub frames: usize,
     pub audio: usize,
+    pub ui: usize,
     pub bytes: usize,
 }
 
@@ -422,10 +503,10 @@ pub async fn run(
     loop {
         match run_one_sync(&cfg, &mut cursor, local.as_ref(), &http).await {
             Ok(report) => {
-                if report.frames > 0 || report.audio > 0 {
+                if report.frames > 0 || report.audio > 0 || report.ui > 0 {
                     info!(
-                        "enterprise sync: pushed {} frames, {} audio ({} bytes)",
-                        report.frames, report.audio, report.bytes
+                        "enterprise sync: pushed {} frames, {} audio, {} ui ({} bytes)",
+                        report.frames, report.audio, report.ui, report.bytes
                     );
                 }
                 backoff = BACKOFF_INITIAL;
@@ -510,6 +591,20 @@ mod tests {
         }
     }
 
+    fn ui_event(id: i64, ts: &str, app: &str, element: &str) -> UiEventRow {
+        UiEventRow {
+            event_id: id,
+            timestamp: ts.to_string(),
+            event_type: "click".to_string(),
+            app_name: Some(app.to_string()),
+            window_title: None,
+            browser_url: None,
+            element_name: Some(element.to_string()),
+            element_role: Some("button".to_string()),
+            text_content: None,
+        }
+    }
+
     // ─── build_jsonl ────────────────────────────────────────────────────
 
     #[test]
@@ -522,21 +617,38 @@ mod tests {
                 frame(2, "2026-05-07T10:00:30Z", "Arc", "world"),
             ],
             &[audio(1, "2026-05-07T10:00:15Z", "hi")],
+            &[ui_event(1, "2026-05-07T10:00:20Z", "Arc", "Send")],
         );
         let s = String::from_utf8(body).unwrap();
         let lines: Vec<&str> = s.split('\n').filter(|l| !l.is_empty()).collect();
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 4);
         // Must be valid JSON per line and tagged.
         for l in &lines {
             let v: serde_json::Value = serde_json::from_str(l).unwrap();
             assert!(v.get("kind").is_some(), "missing kind: {l}");
             assert!(v.get("device_id").is_some(), "missing device_id: {l}");
         }
+        // Verify the kinds are present.
+        let kinds: Vec<&str> = lines
+            .iter()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<String>>()
+            .iter()
+            .map(|s| Box::leak(s.clone().into_boxed_str()) as &str)
+            .collect();
+        assert!(kinds.contains(&"frame"));
+        assert!(kinds.contains(&"audio"));
+        assert!(kinds.contains(&"ui"));
     }
 
     #[test]
     fn jsonl_empty_input_yields_empty_body() {
-        let body = build_jsonl("dev-1", "host", &[], &[]);
+        let body = build_jsonl("dev-1", "host", &[], &[], &[]);
         assert!(body.is_empty());
     }
 
@@ -550,11 +662,28 @@ mod tests {
                 frame(2, "2026-05-07T10:00:05Z", "Arc", "b"),
             ],
             &[],
+            &[],
         );
         let s = String::from_utf8(body).unwrap();
         let first_line = s.lines().next().unwrap();
         let v: serde_json::Value = serde_json::from_str(first_line).unwrap();
         assert_eq!(v["frame_id"], 1);
+    }
+
+    #[test]
+    fn jsonl_serializes_ui_events() {
+        let body = build_jsonl(
+            "dev-1",
+            "host",
+            &[],
+            &[],
+            &[ui_event(99, "2026-05-07T10:01:00Z", "Salesforce", "Submit Quote")],
+        );
+        let s = String::from_utf8(body).unwrap();
+        let v: serde_json::Value = serde_json::from_str(s.lines().next().unwrap()).unwrap();
+        assert_eq!(v["kind"], "ui");
+        assert_eq!(v["element_name"], "Submit Quote");
+        assert_eq!(v["app_name"], "Salesforce");
     }
 
     // ─── Cursor ─────────────────────────────────────────────────────────
@@ -583,11 +712,13 @@ mod tests {
         let c = Cursor {
             last_frame_ts: Some("2026-05-07T10:00:00Z".to_string()),
             last_audio_ts: Some("2026-05-07T09:00:00Z".to_string()),
+            last_ui_ts: Some("2026-05-07T09:30:00Z".to_string()),
         };
         c.save(&p).unwrap();
         let loaded = Cursor::load(&p);
         assert_eq!(loaded.last_frame_ts, c.last_frame_ts);
         assert_eq!(loaded.last_audio_ts, c.last_audio_ts);
+        assert_eq!(loaded.last_ui_ts, c.last_ui_ts);
     }
 
     #[test]
@@ -597,6 +728,7 @@ mod tests {
         Cursor {
             last_frame_ts: Some("t".to_string()),
             last_audio_ts: None,
+            last_ui_ts: None,
         }
         .save(&p)
         .unwrap();
@@ -748,6 +880,7 @@ mod tests {
         let mut cursor = Cursor {
             last_frame_ts: Some("2026-05-07T10:00:00Z".to_string()),
             last_audio_ts: Some("2026-05-07T10:00:00Z".to_string()),
+        last_ui_ts: Some("2026-05-07T10:00:00Z".to_string()),
         };
         let local = MockLocal::new(vec![vec![]], vec![vec![]]);
         let http = reqwest::Client::new();
@@ -795,6 +928,7 @@ mod tests {
         let mut cursor = Cursor {
             last_frame_ts: Some("2026-05-07T09:00:00Z".to_string()),
             last_audio_ts: Some("2026-05-07T09:00:00Z".to_string()),
+        last_ui_ts: Some("2026-05-07T09:00:00Z".to_string()),
         };
         let local = MockLocal::new(
             vec![vec![
@@ -833,6 +967,7 @@ mod tests {
         let mut cursor = Cursor {
             last_frame_ts: Some("2026-05-07T09:00:00Z".to_string()),
             last_audio_ts: Some("2026-05-07T09:00:00Z".to_string()),
+        last_ui_ts: Some("2026-05-07T09:00:00Z".to_string()),
         };
         let local = MockLocal::new(
             vec![vec![frame(1, "2026-05-07T10:00:00Z", "Arc", "x")]],
@@ -863,6 +998,7 @@ mod tests {
         let mut cursor = Cursor {
             last_frame_ts: Some("2026-05-07T09:00:00Z".to_string()),
             last_audio_ts: Some("2026-05-07T09:00:00Z".to_string()),
+        last_ui_ts: Some("2026-05-07T09:00:00Z".to_string()),
         };
         let local = MockLocal::new(
             vec![vec![frame(1, "2026-05-07T10:00:00Z", "Arc", "x")]],
@@ -902,6 +1038,7 @@ mod tests {
         let mut cursor = Cursor {
             last_frame_ts: Some("2026-05-07T09:00:00Z".to_string()),
             last_audio_ts: Some("2026-05-07T09:00:00Z".to_string()),
+        last_ui_ts: Some("2026-05-07T09:00:00Z".to_string()),
         };
         let local = MockLocal::new(
             vec![vec![frame(1, "2026-05-07T10:00:00Z", "Arc", "x")]],

@@ -26,6 +26,7 @@ mod imp {
     use crate::recording::local_api_context_from_app;
     use ee_sync::{
         AudioRow, EnterpriseSyncConfig, EnterpriseSyncError, FrameRow, LocalApiClient,
+        UiEventRow,
     };
     use serde::Deserialize;
     use std::sync::Arc;
@@ -72,9 +73,23 @@ mod imp {
     enum LocalSearchItem {
         OCR(LocalOcr),
         Audio(LocalAudio),
-        // Other variants ignored — we don't currently sync UI/Input/Memory.
+        Input(LocalInput),
+        // Memory/UI variants ignored — only the ones we sync are listed.
         #[serde(other)]
         Other,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct LocalInput {
+        id: i64,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        event_type: String,
+        app_name: Option<String>,
+        window_title: Option<String>,
+        browser_url: Option<String>,
+        text_content: Option<String>,
+        element_role: Option<String>,
+        element_name: Option<String>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -190,6 +205,76 @@ mod imp {
                         transcription: a.transcription,
                         speaker: a.speaker.and_then(|s| s.name).filter(|s| !s.is_empty()),
                         device: Some(a.device_name).filter(|s| !s.is_empty()),
+                    });
+                }
+            }
+            out.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            Ok(out)
+        }
+
+        async fn fetch_ui_events_since(
+            &self,
+            since_ts: Option<&str>,
+            limit: u32,
+        ) -> Result<Vec<UiEventRow>, EnterpriseSyncError> {
+            // Local /search content_type=ui returns rows from the
+            // `ui_events` table — clicks, keystrokes, focus changes,
+            // clipboard. Only sync events that have an element_name
+            // (real AX-resolved targets) — keystroke noise without
+            // element context isn't useful for SOP synthesis and
+            // bloats the corpus.
+            let mut url = format!(
+                "{}/search?content_type=ui&limit={}",
+                self.api_url_base, limit
+            );
+            if let Some(ts) = since_ts {
+                url.push_str(&format!("&start_time={}", urlencoding::encode(ts)));
+            }
+            let resp = self
+                .auth(self.http.get(&url))
+                .send()
+                .await
+                .map_err(|e| EnterpriseSyncError::LocalApi(e.to_string()))?;
+            if !resp.status().is_success() {
+                return Err(EnterpriseSyncError::LocalApi(format!(
+                    "GET {} -> {}",
+                    url,
+                    resp.status()
+                )));
+            }
+            let body: LocalSearchResponse = resp
+                .json()
+                .await
+                .map_err(|e| EnterpriseSyncError::LocalApi(format!("decode: {e}")))?;
+            let mut out = Vec::with_capacity(body.data.len());
+            for item in body.data {
+                if let LocalSearchItem::Input(i) = item {
+                    // Skip events without element context — they're noise.
+                    if i.element_name.as_deref().unwrap_or("").is_empty()
+                        && i.text_content.as_deref().unwrap_or("").is_empty()
+                    {
+                        continue;
+                    }
+                    // Truncate text_content aggressively — full keylog
+                    // streams blow the token budget. 200 chars is enough
+                    // for "what was typed" without leaking essays.
+                    let text_content = i.text_content.map(|t| {
+                        if t.len() > 200 {
+                            format!("{}…", &t[..200])
+                        } else {
+                            t
+                        }
+                    });
+                    out.push(UiEventRow {
+                        event_id: i.id,
+                        timestamp: i.timestamp.to_rfc3339(),
+                        event_type: i.event_type,
+                        app_name: i.app_name.filter(|s| !s.is_empty()),
+                        window_title: i.window_title.filter(|s| !s.is_empty()),
+                        browser_url: i.browser_url.filter(|s| !s.is_empty()),
+                        element_name: i.element_name.filter(|s| !s.is_empty()),
+                        element_role: i.element_role.filter(|s| !s.is_empty()),
+                        text_content,
                     });
                 }
             }
