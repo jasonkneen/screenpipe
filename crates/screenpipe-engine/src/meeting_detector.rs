@@ -288,22 +288,24 @@ pub fn load_detection_profiles() -> Vec<MeetingDetectionProfile> {
             ],
             min_signals_required: 1,
         },
-        // Discord native (macOS + Windows)
-        // Native macOS: Electron exposes 0 windows but menu bar has "Mute"/"Deafen"
-        // items ONLY when in a voice channel — these are reliable call signals.
-        // Windows: full Electron AX tree works via UIA.
-        // NOTE: Mute/Deafen menu items exist even when NOT in a voice channel,
-        // so we require "Disconnect" (only present when connected to voice) as
-        // the primary signal. Mute is kept as a secondary confirmation signal.
+        // Discord native — macOS.
+        // Electron exposes 0 windows on macOS but the app menu bar has
+        // Mute/Deafen menu items year-round and a "Disconnect" item ONLY
+        // when in a voice channel. Require Disconnect + Mute (min=2) so
+        // we never trigger from the channel-list panel or the always-on
+        // user-controls bar (those expose Mute/Deafen-like buttons but
+        // not a "Disconnect" menu entry). Concrete FP this guards
+        // against: 2026-04-14 fe669f5b6 — Mute alone fired even when
+        // outside any voice channel.
+        #[cfg(target_os = "macos")]
         MeetingDetectionProfile {
             app_identifiers: AppIdentifiers {
                 macos_app_names: &["discord"],
-                windows_process_names: &["discord.exe"],
+                windows_process_names: &[],
                 browser_url_patterns: &[],
                 browser_title_patterns: &[],
             },
             call_signals: vec![
-                // "Disconnect" only appears when actually connected to a voice channel
                 CallSignal::MenuBarItem {
                     title_contains: "Disconnect",
                 },
@@ -312,12 +314,41 @@ pub fn load_detection_profiles() -> Vec<MeetingDetectionProfile> {
                     name_contains: "Disconnect",
                 },
                 CallSignal::NameContains("Disconnect"),
-                // Mute as secondary confirmation (always present, so not sufficient alone)
                 CallSignal::MenuBarItem {
                     title_contains: "Mute",
                 },
             ],
             min_signals_required: 2,
+        },
+        // Discord native — Windows.
+        // UIA can't express MenuBarItem signals as PropertyConditions
+        // (see windows_scan_process_uia, ~line 1285), so the macOS
+        // profile's Mute/Disconnect menu items never fire here. That
+        // left signals 2+3 (RoleWithName + NameContains, both keyed on
+        // "Disconnect") — and the per-element matching loop short-
+        // circuits on first match, so a single "Disconnect" button
+        // counts as 1 signal, not 2. Net effect of the macOS-tuned
+        // min=2 on Windows: every Discord call went undetected from
+        // 2026-04-15 (commit fe669f5b6) until the user reported it.
+        // Discord's UI never shows "Disconnect" outside an active
+        // voice channel, so min=1 is safe here without the macOS
+        // FP risk.
+        #[cfg(target_os = "windows")]
+        MeetingDetectionProfile {
+            app_identifiers: AppIdentifiers {
+                macos_app_names: &[],
+                windows_process_names: &["discord.exe"],
+                browser_url_patterns: &[],
+                browser_title_patterns: &[],
+            },
+            call_signals: vec![
+                CallSignal::RoleWithName {
+                    role: "AXButton",
+                    name_contains: "Disconnect",
+                },
+                CallSignal::NameContains("Disconnect"),
+            ],
+            min_signals_required: 1,
         },
         // Discord in browser — require BOTH "Voice Connected" bar AND "Disconnect"
         // button. Either alone can appear without being in a call (e.g. seeing other
