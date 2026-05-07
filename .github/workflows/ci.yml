@@ -178,6 +178,24 @@ jobs:
           }
           Get-ChildItem -Path $dst -Filter "onnxruntime*.dll" | Select-Object Name, Length
 
+      # Add the ONNX lib dir to PATH for ALL cargo-test steps below.
+      # The DLL staging step above does put onnxruntime*.dll next to the
+      # test binaries (verified via Get-ChildItem), but accuracy_test
+      # still exits 0xc0000135 (STATUS_DLL_NOT_FOUND) — the loader
+      # resolves the .exe's adjacent dir BEFORE PATH only on the
+      # primary DLL; transitive deps still go through standard search,
+      # and on a sccache-restored deps/ at least one of those misses.
+      # Prepending the lib dir to PATH makes the Windows DLL loader
+      # find onnxruntime.dll + its providers via search regardless of
+      # adjacent-file presence — same approach Tauri's release bundle
+      # uses via resourcesMap on `--no-bundle`-skipped paths.
+      - name: Add ONNX lib dir to PATH for cargo tests
+        shell: pwsh
+        run: |
+          $ortLib = "${{ github.workspace }}/apps/screenpipe-app-tauri/src-tauri/onnxruntime-win-x64-1.19.2/lib"
+          echo $ortLib | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "PATH appended: $ortLib"
+
       - name: Run specific Windows OCR cargo test
         env:
           RUSTFLAGS: "-C link-arg=/LTCG"
