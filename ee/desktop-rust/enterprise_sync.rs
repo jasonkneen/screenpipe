@@ -193,6 +193,18 @@ pub trait LocalApiClient: Send + Sync {
     ) -> Result<Vec<UiEventRow>, EnterpriseSyncError> {
         Ok(Vec::new())
     }
+
+    /// Fetch a downsized JPEG thumbnail of the most recent frame. Called
+    /// once per sync tick (so ~1 thumbnail every 5 min during active
+    /// sessions). Returns None when there's no recent frame or the
+    /// implementation chose to skip (e.g. the latest frame is identical
+    /// to the previously snapshotted one). Default returns None — shims
+    /// that don't support image fetching just don't sync screenshots.
+    async fn fetch_latest_snapshot(
+        &self,
+    ) -> Result<Option<SnapshotRow>, EnterpriseSyncError> {
+        Ok(None)
+    }
 }
 
 // ─── Wire types — what we POST upstream ─────────────────────────────────────
@@ -244,8 +256,27 @@ pub struct UiEventRow {
     pub text_content: Option<String>,
 }
 
+/// A downsized screenshot thumbnail. JPEG @ Q60, 320×180 — small enough to
+/// embed inline as base64 in the JSONL stream (~30KB per record after
+/// base64). The model uses these to anchor SOP steps to actual UI shots
+/// the way Tango / Scribe do, except continuous instead of explicit-record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SnapshotRow {
+    /// Frame id this thumbnail is derived from. Lets downstream link
+    /// the snapshot back to the OCR/AX text record by `frame_id`.
+    pub frame_id: i64,
+    pub timestamp: String,
+    /// Always "image/jpeg" today; the field is here so we can switch
+    /// to webp later without breaking the wire format.
+    pub mime: String,
+    /// Base64 (no data: prefix). Caller decodes by `Buffer.from(b64,'base64')`.
+    pub image_b64: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// One JSONL line. Tagged enum keeps mixed streams trivially parseable on the
-/// server side — `kind: "frame" | "audio" | "ui"`.
+/// server side — `kind: "frame" | "audio" | "ui" | "snapshot"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TelemetryRecord {
@@ -267,6 +298,12 @@ pub enum TelemetryRecord {
         #[serde(flatten)]
         ui: UiEventRow,
     },
+    Snapshot {
+        device_id: String,
+        device_label: String,
+        #[serde(flatten)]
+        snapshot: SnapshotRow,
+    },
 }
 
 // ─── Errors ─────────────────────────────────────────────────────────────────
@@ -287,16 +324,18 @@ pub enum EnterpriseSyncError {
 
 // ─── Pure logic: build the JSONL payload ────────────────────────────────────
 
-/// Serialize a batch of frames + audio + UI rows into JSONL bytes, tagged
-/// with the device's identity. Public for unit tests.
+/// Serialize a batch of frames + audio + UI rows + snapshots into JSONL
+/// bytes, tagged with the device's identity. Public for unit tests.
 pub fn build_jsonl(
     device_id: &str,
     device_label: &str,
     frames: &[FrameRow],
     audio: &[AudioRow],
     ui: &[UiEventRow],
+    snapshots: &[SnapshotRow],
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity((frames.len() + audio.len() + ui.len()) * 256);
+    let mut out =
+        Vec::with_capacity((frames.len() + audio.len() + ui.len()) * 256 + snapshots.len() * 50_000);
     for f in frames {
         let rec = TelemetryRecord::Frame {
             device_id: device_id.to_string(),
@@ -351,6 +390,25 @@ pub fn build_jsonl(
                 warn!(
                     "enterprise sync: failed to serialize ui event {}: {}",
                     u.event_id, e
+                );
+            }
+        }
+    }
+    for s in snapshots {
+        let rec = TelemetryRecord::Snapshot {
+            device_id: device_id.to_string(),
+            device_label: device_label.to_string(),
+            snapshot: s.clone(),
+        };
+        match serde_json::to_vec(&rec) {
+            Ok(line) => {
+                out.extend_from_slice(&line);
+                out.push(b'\n');
+            }
+            Err(e) => {
+                warn!(
+                    "enterprise sync: failed to serialize snapshot {}: {}",
+                    s.frame_id, e
                 );
             }
         }
@@ -435,18 +493,36 @@ pub async fn run_one_sync(
     let ui = local
         .fetch_ui_events_since(cursor.last_ui_ts.as_deref(), PAGE_LIMIT)
         .await?;
+    // One snapshot per tick. Best-effort — failure to encode/fetch
+    // shouldn't block the rest of the batch.
+    let snapshots: Vec<SnapshotRow> = match local.fetch_latest_snapshot().await {
+        Ok(Some(s)) => vec![s],
+        Ok(None) => Vec::new(),
+        Err(e) => {
+            warn!("enterprise sync: snapshot fetch failed (skipping): {}", e);
+            Vec::new()
+        }
+    };
 
-    if frames.is_empty() && audio.is_empty() && ui.is_empty() {
+    if frames.is_empty() && audio.is_empty() && ui.is_empty() && snapshots.is_empty() {
         debug!("enterprise sync: nothing new since last tick");
         return Ok(SyncTickReport {
             frames: 0,
             audio: 0,
             ui: 0,
+            snapshots: 0,
             bytes: 0,
         });
     }
 
-    let body = build_jsonl(&cfg.device_id, &cfg.device_label, &frames, &audio, &ui);
+    let body = build_jsonl(
+        &cfg.device_id,
+        &cfg.device_label,
+        &frames,
+        &audio,
+        &ui,
+        &snapshots,
+    );
     let bytes = body.len();
     post_jsonl(http, &cfg.ingest_url, &cfg.license_key, body).await?;
 
@@ -466,6 +542,7 @@ pub async fn run_one_sync(
         frames: frames.len(),
         audio: audio.len(),
         ui: ui.len(),
+        snapshots: snapshots.len(),
         bytes,
     })
 }
@@ -475,6 +552,7 @@ pub struct SyncTickReport {
     pub frames: usize,
     pub audio: usize,
     pub ui: usize,
+    pub snapshots: usize,
     pub bytes: usize,
 }
 
@@ -503,10 +581,10 @@ pub async fn run(
     loop {
         match run_one_sync(&cfg, &mut cursor, local.as_ref(), &http).await {
             Ok(report) => {
-                if report.frames > 0 || report.audio > 0 || report.ui > 0 {
+                if report.frames > 0 || report.audio > 0 || report.ui > 0 || report.snapshots > 0 {
                     info!(
-                        "enterprise sync: pushed {} frames, {} audio, {} ui ({} bytes)",
-                        report.frames, report.audio, report.ui, report.bytes
+                        "enterprise sync: pushed {} frames, {} audio, {} ui, {} snapshots ({} bytes)",
+                        report.frames, report.audio, report.ui, report.snapshots, report.bytes
                     );
                 }
                 backoff = BACKOFF_INITIAL;
@@ -607,6 +685,17 @@ mod tests {
 
     // ─── build_jsonl ────────────────────────────────────────────────────
 
+    fn snapshot(id: i64, ts: &str) -> SnapshotRow {
+        SnapshotRow {
+            frame_id: id,
+            timestamp: ts.to_string(),
+            mime: "image/jpeg".to_string(),
+            image_b64: "AAAA".to_string(), // 3-byte JPEG stand-in
+            width: 320,
+            height: 180,
+        }
+    }
+
     #[test]
     fn jsonl_one_line_per_record() {
         let body = build_jsonl(
@@ -618,18 +707,17 @@ mod tests {
             ],
             &[audio(1, "2026-05-07T10:00:15Z", "hi")],
             &[ui_event(1, "2026-05-07T10:00:20Z", "Arc", "Send")],
+            &[snapshot(2, "2026-05-07T10:00:30Z")],
         );
         let s = String::from_utf8(body).unwrap();
         let lines: Vec<&str> = s.split('\n').filter(|l| !l.is_empty()).collect();
-        assert_eq!(lines.len(), 4);
-        // Must be valid JSON per line and tagged.
+        assert_eq!(lines.len(), 5);
         for l in &lines {
             let v: serde_json::Value = serde_json::from_str(l).unwrap();
             assert!(v.get("kind").is_some(), "missing kind: {l}");
             assert!(v.get("device_id").is_some(), "missing device_id: {l}");
         }
-        // Verify the kinds are present.
-        let kinds: Vec<&str> = lines
+        let kinds: Vec<String> = lines
             .iter()
             .map(|l| {
                 serde_json::from_str::<serde_json::Value>(l).unwrap()["kind"]
@@ -637,18 +725,16 @@ mod tests {
                     .unwrap()
                     .to_string()
             })
-            .collect::<Vec<String>>()
-            .iter()
-            .map(|s| Box::leak(s.clone().into_boxed_str()) as &str)
             .collect();
-        assert!(kinds.contains(&"frame"));
-        assert!(kinds.contains(&"audio"));
-        assert!(kinds.contains(&"ui"));
+        assert!(kinds.iter().any(|k| k == "frame"));
+        assert!(kinds.iter().any(|k| k == "audio"));
+        assert!(kinds.iter().any(|k| k == "ui"));
+        assert!(kinds.iter().any(|k| k == "snapshot"));
     }
 
     #[test]
     fn jsonl_empty_input_yields_empty_body() {
-        let body = build_jsonl("dev-1", "host", &[], &[], &[]);
+        let body = build_jsonl("dev-1", "host", &[], &[], &[], &[]);
         assert!(body.is_empty());
     }
 
@@ -663,11 +749,32 @@ mod tests {
             ],
             &[],
             &[],
+            &[],
         );
         let s = String::from_utf8(body).unwrap();
         let first_line = s.lines().next().unwrap();
         let v: serde_json::Value = serde_json::from_str(first_line).unwrap();
         assert_eq!(v["frame_id"], 1);
+    }
+
+    #[test]
+    fn jsonl_serializes_snapshot() {
+        let body = build_jsonl(
+            "dev-1",
+            "louis-mbp",
+            &[],
+            &[],
+            &[],
+            &[snapshot(42, "2026-05-07T10:00:30Z")],
+        );
+        let s = String::from_utf8(body).unwrap();
+        let v: serde_json::Value = serde_json::from_str(s.lines().next().unwrap()).unwrap();
+        assert_eq!(v["kind"], "snapshot");
+        assert_eq!(v["frame_id"], 42);
+        assert_eq!(v["mime"], "image/jpeg");
+        assert_eq!(v["width"], 320);
+        assert_eq!(v["height"], 180);
+        assert!(v.get("image_b64").is_some());
     }
 
     #[test]
@@ -678,6 +785,7 @@ mod tests {
             &[],
             &[],
             &[ui_event(99, "2026-05-07T10:01:00Z", "Salesforce", "Submit Quote")],
+            &[],
         );
         let s = String::from_utf8(body).unwrap();
         let v: serde_json::Value = serde_json::from_str(s.lines().next().unwrap()).unwrap();

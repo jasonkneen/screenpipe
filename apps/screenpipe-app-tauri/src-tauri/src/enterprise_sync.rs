@@ -26,8 +26,9 @@ mod imp {
     use crate::recording::local_api_context_from_app;
     use ee_sync::{
         AudioRow, EnterpriseSyncConfig, EnterpriseSyncError, FrameRow, LocalApiClient,
-        UiEventRow,
+        SnapshotRow, UiEventRow,
     };
+    use base64::Engine;
     use serde::Deserialize;
     use std::sync::Arc;
     use tracing::{info, warn};
@@ -280,6 +281,96 @@ mod imp {
             }
             out.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
             Ok(out)
+        }
+
+        async fn fetch_latest_snapshot(
+            &self,
+        ) -> Result<Option<SnapshotRow>, EnterpriseSyncError> {
+            // Step 1: ask /search for the latest OCR frame to learn its
+            // frame_id + timestamp + apparent app context.
+            let search_url = format!(
+                "{}/search?content_type=ocr&limit=1",
+                self.api_url_base
+            );
+            let resp = self
+                .auth(self.http.get(&search_url))
+                .send()
+                .await
+                .map_err(|e| EnterpriseSyncError::LocalApi(e.to_string()))?;
+            if !resp.status().is_success() {
+                return Err(EnterpriseSyncError::LocalApi(format!(
+                    "GET {} -> {}",
+                    search_url,
+                    resp.status()
+                )));
+            }
+            let body: LocalSearchResponse = resp
+                .json()
+                .await
+                .map_err(|e| EnterpriseSyncError::LocalApi(format!("decode: {e}")))?;
+            let (frame_id, ts) = match body.data.into_iter().next() {
+                Some(LocalSearchItem::OCR(o)) => (o.frame_id, o.timestamp),
+                _ => return Ok(None),
+            };
+
+            // Step 2: fetch the frame's image bytes.
+            let img_url = format!("{}/frames/{}", self.api_url_base, frame_id);
+            let resp = self
+                .auth(self.http.get(&img_url))
+                .send()
+                .await
+                .map_err(|e| EnterpriseSyncError::LocalApi(e.to_string()))?;
+            if !resp.status().is_success() {
+                return Err(EnterpriseSyncError::LocalApi(format!(
+                    "GET {} -> {}",
+                    img_url,
+                    resp.status()
+                )));
+            }
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| EnterpriseSyncError::LocalApi(e.to_string()))?;
+
+            // Step 3: decode → resize 320×180 → JPEG @ Q60 → base64.
+            // Done in spawn_blocking — image decoding is CPU-bound and we
+            // don't want to monopolize the tokio runtime. Bounded box: if
+            // anything goes wrong, return Ok(None) so the rest of the
+            // batch still ships.
+            let bytes_vec = bytes.to_vec();
+            let encoded = tokio::task::spawn_blocking(move || -> Option<(Vec<u8>, u32, u32)> {
+                let img = image::load_from_memory(&bytes_vec).ok()?;
+                let resized = img.resize(
+                    320,
+                    180,
+                    image::imageops::FilterType::Triangle,
+                );
+                let (w, h) = (resized.width(), resized.height());
+                let mut buf = Vec::with_capacity(40 * 1024);
+                let mut cursor = std::io::Cursor::new(&mut buf);
+                let encoder =
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 60);
+                resized.into_rgb8().write_with_encoder(encoder).ok()?;
+                Some((buf, w, h))
+            })
+            .await
+            .ok()
+            .flatten();
+
+            let (jpeg, w, h) = match encoded {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            let image_b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
+
+            Ok(Some(SnapshotRow {
+                frame_id,
+                timestamp: ts.to_rfc3339(),
+                mime: "image/jpeg".to_string(),
+                image_b64,
+                width: w,
+                height: h,
+            }))
         }
     }
 
