@@ -2336,7 +2336,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "web-sys",
  "windows 0.62.2",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -3667,8 +3667,8 @@ dependencies = [
 
 [[package]]
 name = "ffmpeg-sidecar"
-version = "2.3.0"
-source = "git+https://github.com/nathanbabcock/ffmpeg-sidecar?branch=main#b3d375274620a2668b3d169f81e3f9890433a455"
+version = "2.5.0"
+source = "git+https://github.com/nathanbabcock/ffmpeg-sidecar?branch=main#b0f48a514235d1278d860f4a0af66aa9d6e1618d"
 dependencies = [
  "anyhow",
  "tar",
@@ -5064,7 +5064,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -5082,7 +5082,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -7837,7 +7837,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -8798,7 +8798,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls 0.23.37",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -8835,7 +8835,7 @@ dependencies = [
  "cfg_aliases 0.2.1",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -9976,7 +9976,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-app"
-version = "2.4.165"
+version = "2.4.166"
 dependencies = [
  "anyhow",
  "arboard",
@@ -10088,7 +10088,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-audio"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "anyhow",
  "audiopipe",
@@ -10144,7 +10144,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-config"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -10156,7 +10156,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-connect"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10189,7 +10189,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-core"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "accessibility",
  "accessibility-sys",
@@ -10237,7 +10237,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-db"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "anyhow",
  "chrono",
@@ -10262,7 +10262,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-engine"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -10330,7 +10330,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-events"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "anyhow",
  "chrono",
@@ -10346,7 +10346,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-redact"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10371,7 +10371,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-screen"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "accessibility-sys",
  "anyhow",
@@ -10424,7 +10424,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-vault"
-version = "0.3.322"
+version = "0.3.323"
 dependencies = [
  "argon2",
  "chacha20poly1305",

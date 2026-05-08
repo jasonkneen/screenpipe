@@ -1,6 +1,6 @@
 ---
 name: screenpipe-api
-description: Query the user's screen recordings, audio, UI elements, and usage analytics via the local Screenpipe REST API at localhost:3030. Use when the user asks about their screen activity, meetings, apps, productivity, media export, retranscription, or connected services.
+description: Query and persist the user's data via the local Screenpipe REST API at localhost:3030 — screen recordings, audio, UI elements, usage analytics, and the user's persistent memory store. Use when the user asks about their screen activity, meetings, apps, productivity, media export, retranscription, connected services, OR when they ask to save / remember / store / note information so it can be retrieved later (POST /memories — survives across sessions and is queryable by Claude/external agents via the same API).
 ---
 
 # Screenpipe API
