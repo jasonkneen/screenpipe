@@ -66,10 +66,16 @@ pub fn setup_content_process_handler(window: &tauri::WebviewWindow) {
             }
 
             extern "C" fn on_content_process_terminate(_this: &Object, _cmd: Sel, webview: id) {
-                tracing::warn!("[WKWebView] content process terminated; reloading webview");
-                unsafe {
-                    let _: () = msg_send![webview, reload];
-                }
+                // Cocoa→Rust trampolines abort the process on panic via
+                // `panic_cannot_unwind`. Catch any panic so a runtime issue
+                // here (tracing subscriber, dangling webview ptr, etc.) can't
+                // kill the app.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    tracing::warn!("[WKWebView] content process terminated; reloading webview");
+                    unsafe {
+                        let _: () = msg_send![webview, reload];
+                    }
+                }));
             }
 
             let selector = sel!(webViewWebContentProcessDidTerminate:);

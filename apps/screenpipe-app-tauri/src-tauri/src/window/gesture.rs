@@ -39,16 +39,21 @@ pub fn init_magnify_handler(app: tauri::AppHandle) {
         let superclass = Class::get("NSObject").unwrap();
         let mut decl = ClassDecl::new("ScreenpipeMagnifyHandler", superclass).unwrap();
         extern "C" fn handle_magnify(_this: &Object, _sel: Sel, recognizer: *mut Object) {
-            with_autorelease_pool(|| unsafe {
-                use objc::{msg_send, sel, sel_impl};
-                use tauri::Emitter;
-                let magnification: f64 = msg_send![recognizer, magnification];
-                // Reset so next callback gives delta, not cumulative
-                let _: () = msg_send![recognizer, setMagnification: 0.0f64];
-                if let Some(app) = MAGNIFY_APP_HANDLE.get() {
-                    let _ = app.emit("native-magnify", magnification);
-                }
-            });
+            // ObjC→Rust trampoline: a panic here aborts the app via
+            // panic_cannot_unwind. Catch it so a hiccup in `app.emit` /
+            // serde / channel poisoning can't kill the process mid-gesture.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_autorelease_pool(|| unsafe {
+                    use objc::{msg_send, sel, sel_impl};
+                    use tauri::Emitter;
+                    let magnification: f64 = msg_send![recognizer, magnification];
+                    // Reset so next callback gives delta, not cumulative
+                    let _: () = msg_send![recognizer, setMagnification: 0.0f64];
+                    if let Some(app) = MAGNIFY_APP_HANDLE.get() {
+                        let _ = app.emit("native-magnify", magnification);
+                    }
+                });
+            }));
         }
         unsafe {
             use objc::{sel, sel_impl};
@@ -74,35 +79,40 @@ pub fn init_magnify_handler(app: tauri::AppHandle) {
         > = std::sync::OnceLock::new();
 
         extern "C" fn swizzled_scroll_wheel(this: &Object, sel: Sel, event: *mut Object) {
-            with_autorelease_pool(|| unsafe {
-                use objc::{msg_send, sel, sel_impl};
-                use tauri::Emitter;
-                // Emit Tauri event with scroll data
-                if let Some(app) = MAGNIFY_APP_HANDLE.get() {
-                    let delta_y: f64 = msg_send![event, scrollingDeltaY];
-                    let delta_x: f64 = msg_send![event, scrollingDeltaX];
-                    let modifier_flags: u64 = msg_send![event, modifierFlags];
-                    let ctrl_key = (modifier_flags & (1 << 18)) != 0;
-                    let meta_key = (modifier_flags & (1 << 20)) != 0;
+            // This fires on EVERY WKWebView scroll event — a panic in
+            // `app.emit` / serde would abort the app via panic_cannot_unwind.
+            // Catch the panic but always still forward to the original
+            // scrollWheel: implementation so native scrolling never breaks.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_autorelease_pool(|| unsafe {
+                    use objc::{msg_send, sel, sel_impl};
+                    use tauri::Emitter;
+                    // Emit Tauri event with scroll data
+                    if let Some(app) = MAGNIFY_APP_HANDLE.get() {
+                        let delta_y: f64 = msg_send![event, scrollingDeltaY];
+                        let delta_x: f64 = msg_send![event, scrollingDeltaX];
+                        let modifier_flags: u64 = msg_send![event, modifierFlags];
+                        let ctrl_key = (modifier_flags & (1 << 18)) != 0;
+                        let meta_key = (modifier_flags & (1 << 20)) != 0;
 
-                    let _ = app.emit(
-                        "native-scroll",
-                        serde_json::json!({
-                            "deltaX": delta_x,
-                            "deltaY": delta_y,
-                            "ctrlKey": ctrl_key,
-                            "metaKey": meta_key,
-                        }),
-                    );
-                }
-                // Always call the original scrollWheel: so native CSS
-                // overflow scrolling keeps working in all windows.
-                // The native-scroll Tauri event is emitted above for
-                // timeline/search components that need it.
-                if let Some(original) = ORIGINAL_SCROLL_WHEEL.get() {
-                    original(this, sel, event);
-                }
-            });
+                        let _ = app.emit(
+                            "native-scroll",
+                            serde_json::json!({
+                                "deltaX": delta_x,
+                                "deltaY": delta_y,
+                                "ctrlKey": ctrl_key,
+                                "metaKey": meta_key,
+                            }),
+                        );
+                    }
+                });
+            }));
+            // Always forward to the original scrollWheel: — outside the
+            // catch_unwind so it runs even if our event-emit code panicked.
+            // Native CSS overflow scrolling must keep working in all windows.
+            if let Some(original) = ORIGINAL_SCROLL_WHEEL.get() {
+                original(this, sel, event);
+            }
         }
 
         // Swizzle WKWebView scrollWheel:

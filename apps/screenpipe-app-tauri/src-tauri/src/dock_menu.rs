@@ -26,36 +26,44 @@ pub fn setup_dock_menu(app_handle: AppHandle) {
     let _ = DOCK_APP_HANDLE.set(app_handle);
 
     unsafe {
-        // Callback functions for dock menu items
+        // Callback functions for dock menu items.
+        // All run inside the ObjC→Rust trampoline (nounwind) — wrap in
+        // catch_unwind so a panic logs instead of aborting the app.
         extern "C" fn show_screenpipe(_this: &Object, _sel: Sel, _sender: id) {
-            if let Some(app) = DOCK_APP_HANDLE.get() {
-                let app_for_closure = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    show_main_window(&app_for_closure, false);
-                });
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(app) = DOCK_APP_HANDLE.get() {
+                    let app_for_closure = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        show_main_window(&app_for_closure, false);
+                    });
+                }
+            }));
         }
         extern "C" fn open_settings(_this: &Object, _sel: Sel, _sender: id) {
-            if let Some(app) = DOCK_APP_HANDLE.get() {
-                let app_for_closure = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    let _ = ShowRewindWindow::Home {
-                        page: Some("general".to_string()),
-                    }
-                    .show(&app_for_closure);
-                });
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(app) = DOCK_APP_HANDLE.get() {
+                    let app_for_closure = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        let _ = ShowRewindWindow::Home {
+                            page: Some("general".to_string()),
+                        }
+                        .show(&app_for_closure);
+                    });
+                }
+            }));
         }
         extern "C" fn check_updates(_this: &Object, _sel: Sel, _sender: id) {
-            if let Some(app) = DOCK_APP_HANDLE.get() {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let state = app.state::<std::sync::Arc<crate::updates::UpdatesManager>>();
-                    if let Err(e) = state.check_for_updates(true).await {
-                        tracing::error!("dock menu: check for updates failed: {}", e);
-                    }
-                });
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(app) = DOCK_APP_HANDLE.get() {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app.state::<std::sync::Arc<crate::updates::UpdatesManager>>();
+                        if let Err(e) = state.check_for_updates(true).await {
+                            tracing::error!("dock menu: check for updates failed: {}", e);
+                        }
+                    });
+                }
+            }));
         }
         extern "C" fn dock_menu(_this: &Object, _sel: Sel, _sender: id) -> id {
             unsafe {
