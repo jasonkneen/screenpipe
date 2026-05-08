@@ -497,6 +497,13 @@ fn remove_pid_file(pipes_dir: &Path, pipe_name: &str) {
 
 /// Check if a process with the given PID is still alive.
 fn is_process_alive(pid: u32) -> bool {
+    // 0 is reserved as the "claimed-but-no-child-yet" placeholder. Treating it as
+    // alive on unix would be catastrophic — kill(0, 0) targets the whole process
+    // group, which means the existence check would return true and any kill that
+    // followed would signal every sibling.
+    if pid == 0 {
+        return false;
+    }
     #[cfg(unix)]
     {
         // kill(pid, 0) checks existence without sending a signal
@@ -529,6 +536,7 @@ fn is_process_alive(pid: u32) -> bool {
 
 /// On startup, remove any PID files whose processes are no longer alive.
 fn cleanup_orphaned_pid_files(pipes_dir: &Path) {
+    let self_pid = std::process::id();
     let entries = match std::fs::read_dir(pipes_dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -539,6 +547,14 @@ fn cleanup_orphaned_pid_files(pipes_dir: &Path) {
         }
         let pipe_name = entry.file_name().to_string_lossy().to_string();
         if let Some(pid) = read_pid_file(pipes_dir, &pipe_name) {
+            // Never kill ourselves. In-process (pi-agent) pipes never have a
+            // child PID, so the pre-spawn placeholder claim used to be the
+            // running app's own PID — meaning the next backend bounce would
+            // SIGKILL the app. Treat self-PID files as stale claims.
+            if pid == self_pid {
+                remove_pid_file(pipes_dir, &pipe_name);
+                continue;
+            }
             if is_process_alive(pid) {
                 info!(
                     "startup: killing orphaned pipe '{}' process {}",
@@ -1769,8 +1785,11 @@ impl PipeManager {
             }
         }
 
-        // Write a pre-emptive PID file to claim the lock before spawn
-        write_pid_file(&self.pipes_dir, name, std::process::id());
+        // Pre-emptive lock claim. Sentinel 0 means "claimed, no child PID yet";
+        // the spawn watcher overwrites it with the real subprocess PID. Never
+        // write our own PID — for in-process pi-agent runs there is no child,
+        // and a self-PID file would make the next startup SIGKILL the app.
+        write_pid_file(&self.pipes_dir, name, 0);
 
         // Resolve preset
         let (run_model, run_provider, run_provider_url, run_api_key, preset_prompt) =
@@ -2203,8 +2222,9 @@ impl PipeManager {
                 }
             }
 
-            // Write a pre-emptive PID file to claim the lock before spawn
-            write_pid_file(&self.pipes_dir, name, std::process::id());
+            // Pre-emptive lock claim with sentinel 0. See start_pipe_background
+            // for the rationale — never write our own PID here.
+            write_pid_file(&self.pipes_dir, name, 0);
 
             let started_at = Utc::now();
             let pipe_dir = self.pipes_dir.join(name);
@@ -3484,7 +3504,8 @@ impl PipeManager {
                             let mut r = running_ref.lock().await;
                             r.insert(pipe_name.clone(), ExecutionHandle { pid: 0 });
                         }
-                        write_pid_file(&pipes_dir_for_mark, &pipe_name, std::process::id());
+                        // Sentinel 0 — see start_pipe_background.
+                        write_pid_file(&pipes_dir_for_mark, &pipe_name, 0);
 
                         info!("scheduler: running pipe '{}'", pipe_name);
 
