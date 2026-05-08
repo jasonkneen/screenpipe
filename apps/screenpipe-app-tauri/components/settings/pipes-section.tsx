@@ -2417,7 +2417,14 @@ export function PipesSection() {
                             </p>
                           ) : executions.length > 0 ? (
                             executions.map((exec) => (
-                              <div key={exec.id} className="border p-2 space-y-1">
+                              // contain: layout paint isolates the markdown
+                              // subtree's reflow cost from page-wide layout
+                              // passes. Without it, opening the device /
+                              // schedule / timeout dropdowns (Radix calls
+                              // getBoundingClientRect on the trigger) freezes
+                              // the page while the browser re-lays-out every
+                              // execution row's markdown.
+                              <div key={exec.id} className="border p-2 space-y-1" style={{ contain: "layout paint" }}>
                                 <div className="flex items-center gap-2 text-xs font-mono flex-wrap">
                                   <span className="text-muted-foreground">
                                     {exec.started_at ? new Date(exec.started_at).toLocaleString() : "queued"}
@@ -2472,7 +2479,8 @@ export function PipesSection() {
                             ))
                           ) : (
                             logs.slice().reverse().map((log, i) => (
-                              <div key={i} className="border p-2 space-y-1">
+                              // see contain: layout paint comment above
+                              <div key={i} className="border p-2 space-y-1" style={{ contain: "layout paint" }}>
                                 <div className="flex items-center gap-2 text-xs font-mono">
                                   <span className="text-muted-foreground">{new Date(log.started_at).toLocaleString()}</span>
                                   <span>{log.success ? "✓" : "✗"}</span>

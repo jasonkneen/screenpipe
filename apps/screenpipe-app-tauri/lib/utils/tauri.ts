@@ -1613,6 +1613,29 @@ asyncImagePiiRedaction?: boolean;
  */
 piiBackend?: string; 
 /**
+ * Where the AI PII redaction actually runs. One switch flips
+ * BOTH modalities (text + image) because the user-facing
+ * "AI PII removal" toggle is one knob.
+ * 
+ * - `"local"` (default): on-device ONNX models. Privacy by
+ * construction — pixels and text never leave the box. Slower,
+ * especially on weak hardware (~1-3 s per text row, ~60-180 ms
+ * per frame).
+ * - `"tinfoil"`: send to the screenpipe Tinfoil enclave (H200,
+ * confidential compute). Much faster (~30-100 ms per row /
+ * frame). Data leaves the device but is end-to-end encrypted
+ * into an attested confidential-compute enclave that even
+ * Tinfoil ops can't read into. Requires network +
+ * `SCREENPIPE_PRIVACY_FILTER_API_KEY` (or the cloud auth key).
+ * 
+ * Note on attestation: the proper attested-transport client
+ * (Tinfoil's secure-client SDK) is Go/Python/JS-only at time of
+ * writing. The Rust adapter currently uses plain HTTPS — which
+ * gives confidentiality vs. the network but NOT vs. a malicious
+ * Tinfoil operator. Tracked separately; structured for swap-in.
+ */
+piiBackend?: string; 
+/**
  * Screenpipe cloud user ID. Empty string means not logged in.
  * Kept as String (not Option) to match existing store.bin schema.
  */
