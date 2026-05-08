@@ -472,85 +472,30 @@ impl ServerCore {
             warn!("mdns advertisement failed (non-fatal): {}", e);
         }
 
-        // ── Async PII reconciliation workers (issue #3185 / PR #3188) ─────
-        // Two independent workers — text and image — each gated by its
-        // own toggle. Both off by default; users opt in through
-        // Settings → Privacy → "AI PII removal".
-        //
-        // The single `pii_backend` config flag selects the inner
-        // adapter for BOTH modalities:
-        //   - "local"   → local ONNX (text: stub, image: rfdetr_v8)
-        //   - "tinfoil" → confidential-compute enclave (H200) for both
-        let backend = config.pii_backend.as_str();
-        let use_tinfoil = matches!(backend, "tinfoil" | "cloud" | "enclave");
-
-        if config.async_pii_redaction {
-            use screenpipe_redact::adapters::tinfoil::TinfoilRedactor;
-            use screenpipe_redact::pipeline::{Pipeline, PipelineConfig};
-            use screenpipe_redact::worker::{Worker, WorkerConfig, ALL_TARGET_TABLES};
-            use screenpipe_redact::Redactor;
-
-            // Today: regardless of `pii_backend`, the text "AI" step
-            // is the Tinfoil enclave because the local OPF ONNX
-            // export is still landing (see PR description). The flag
-            // is here so flipping the enclave OFF on the local mode
-            // is a one-line change once OnnxRedactor is ready.
-            let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::from_env());
-            // The worker is destructive-only: it overwrites the source
-            // columns (`text` / `transcription` / `text_content` /
-            // `accessibility_text`) with the redacted text and stamps
-            // `*_redacted_at`. That's what the user-facing "AI PII
-            // removal" toggle means. The 20260507 migration drops the
-            // dead duplicate columns the old non-destructive mode used.
-            info!("starting async text-PII reconciliation worker (backend={backend})");
-            let pipeline = Pipeline::regex_then_ai(ai, PipelineConfig::default());
-            let pipeline_arc = Arc::new(pipeline) as Arc<dyn Redactor>;
-            let cfg = WorkerConfig {
-                tables: ALL_TARGET_TABLES.to_vec(),
-                ..Default::default()
-            };
-            let _ = Worker::new(db.pool.clone(), pipeline_arc, cfg).spawn();
-        }
-
-        if config.async_image_pii_redaction {
-            use screenpipe_redact::adapters::rfdetr::{RfdetrConfig, RfdetrRedactor};
-            use screenpipe_redact::adapters::tinfoil_image::TinfoilImageRedactor;
-            use screenpipe_redact::image::worker::{ImageWorker, ImageWorkerConfig};
-            use screenpipe_redact::ImageRedactor;
-
-            let pool = db.pool.clone();
-            if use_tinfoil {
-                info!("starting async image-PII worker (backend=tinfoil)");
-                let detector =
-                    Arc::new(TinfoilImageRedactor::from_env()) as Arc<dyn ImageRedactor>;
-                let _ = ImageWorker::new(pool, detector, ImageWorkerConfig::default()).spawn();
-            } else {
-                // Local mode: rfdetr_v8 ONNX. First-run downloads
-                // ~108 MB from huggingface.co/screenpipe/pii-image-redactor
-                // and verifies SHA-256 before landing in ~/.screenpipe/models/.
-                tokio::spawn(async move {
-                    match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
-                        Ok(detector) => {
-                            info!("starting async image-PII worker (backend=local)");
-                            let detector_arc =
-                                Arc::new(detector) as Arc<dyn ImageRedactor>;
-                            let _ = ImageWorker::new(
-                                pool,
-                                detector_arc,
-                                ImageWorkerConfig::default(),
-                            )
-                            .spawn();
-                        }
-                        Err(e) => {
-                            warn!(
-                                "image-PII (local) enabled but couldn't load rfdetr_v8 model; \
-                                 skipping: {e}. switch to backend=tinfoil in Settings to use \
-                                 the cloud enclave instead."
-                            );
-                        }
-                    }
-                });
-            }
+        // ── AI PII removal — disabled in v2.4.161 ────────────────────────
+        // The text + image PII workers are no longer spawned, even if
+        // `async_pii_redaction` / `async_image_pii_redaction` are set
+        // via CLI flag, settings file, or stale config. Reasoning:
+        //   - rfdetr_v8 had unacceptable precision AND recall on real
+        //     screenpipe content (over-redacted code/docs, missed
+        //     actual passwords). Combined with destructive writes
+        //     this destroyed users' timelines within hours of opt-in.
+        //   - The local text ONNX never shipped, so "Local" backend
+        //     silently routed text redaction to the cloud enclave —
+        //     mismatch with the toggle's label.
+        // The Settings UI toggles were hidden in the same release;
+        // schema fields stay on the config struct for serde compat.
+        // Re-enable when we ship a model + benchmark we can stand
+        // behind. Until then, log a one-shot warning if the user has
+        // it enabled so they're not confused about why nothing happens.
+        if config.async_pii_redaction || config.async_image_pii_redaction {
+            warn!(
+                "AI PII removal is disabled in this build (async_pii_redaction={}, \
+                 async_image_pii_redaction={}). The local rfdetr_v8 image model + \
+                 the unfinished local text ONNX were both unsafe defaults; the feature \
+                 will return when there's a model + benchmark we trust.",
+                config.async_pii_redaction, config.async_image_pii_redaction
+            );
         }
 
         Ok(Self {

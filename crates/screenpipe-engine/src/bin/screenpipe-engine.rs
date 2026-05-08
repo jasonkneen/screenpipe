@@ -1491,76 +1491,19 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Spawn the async PII reconciliation worker (issue #3185).
-    // Off by default — only runs when `--async-pii-redaction` is set.
-    // The capture path is unaffected either way.
-    if record_args.async_pii_redaction {
-        use screenpipe_redact::{
-            adapters::tinfoil::TinfoilRedactor,
-            pipeline::{Pipeline, PipelineConfig},
-            worker::{Worker, WorkerConfig, ALL_TARGET_TABLES},
-            Redactor,
-        };
-        use std::sync::Arc;
-
-        info!("starting async PII reconciliation worker (destructive overwrite of source columns)");
-
-        // Pipeline: regex pre-pass + Tinfoil enclave fallback. Regex
-        // catches structural PII deterministically and on-device; the
-        // Tinfoil call only fires for inputs longer than regex can
-        // fully cover (see PipelineConfig).
-        let tinfoil = Arc::new(TinfoilRedactor::from_env()) as Arc<dyn Redactor>;
-        let pipeline = Pipeline::regex_then_ai(tinfoil, PipelineConfig::default());
-        let pipeline_arc = Arc::new(pipeline) as Arc<dyn Redactor>;
-
-        let worker_cfg = WorkerConfig {
-            tables: ALL_TARGET_TABLES.to_vec(),
-            ..Default::default()
-        };
-        let _worker_handle = Worker::new(db.pool.clone(), pipeline_arc, worker_cfg).spawn();
-        // The worker runs for the lifetime of the engine. We don't
-        // join its handle — when the process exits the runtime
-        // tears down the task. If we ever want graceful shutdown
-        // (drain in-flight HTTP calls), wire `_worker_handle` into
-        // the shutdown_tx flow.
-    }
-
-    // Image-PII reconciliation worker (issue #3185 follow-up).
-    // Independent of the text worker — users can toggle either one
-    // without the other. Requires the rfdetr_v8.onnx model present
-    // and at least one of the `onnx-*` cargo features built.
-    if record_args.async_image_pii_redaction {
-        use screenpipe_redact::adapters::rfdetr::{RfdetrConfig, RfdetrRedactor};
-        use screenpipe_redact::image::worker::{ImageWorker, ImageWorkerConfig};
-        use screenpipe_redact::ImageRedactor;
-        use std::sync::Arc;
-
-        // load_or_download fetches the ONNX from
-        // huggingface.co/screenpipe/pii-image-redactor on first run
-        // (~108 MB), verifies SHA-256, caches at
-        // ~/.screenpipe/models/rfdetr_v8.onnx. Subsequent starts are
-        // instant.
-        match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
-            Ok(detector) => {
-                info!(
-                    "starting async image-PII reconciliation worker (destructive overwrite of source JPGs)"
-                );
-                let cfg = ImageWorkerConfig::default();
-                let detector_arc = Arc::new(detector) as Arc<dyn ImageRedactor>;
-                let _img_handle = ImageWorker::new(db.pool.clone(), detector_arc, cfg).spawn();
-            }
-            Err(e) => {
-                // Loud-but-non-fatal: capture continues; user gets an
-                // explicit "model missing or download failed" message
-                // in the log, and the regular text redactor (if
-                // enabled) keeps running.
-                tracing::warn!(
-                    "image-PII redaction enabled but couldn't load model; skipping: {e}. \
-                     check network reachability to huggingface.co or pre-stage \
-                     rfdetr_v8.onnx at ~/.screenpipe/models/."
-                );
-            }
-        }
+    // AI PII removal — disabled in v2.4.161. The text + image PII
+    // workers are no longer spawned even if `--async-pii-redaction` /
+    // `--async-image-pii-redaction` are set. See server_core.rs in
+    // the desktop app for the full rationale; same code path here.
+    if record_args.async_pii_redaction || record_args.async_image_pii_redaction {
+        tracing::warn!(
+            "AI PII removal is disabled in this build (async_pii_redaction={}, \
+             async_image_pii_redaction={}). The local rfdetr_v8 image model + \
+             the unfinished local text ONNX were both unsafe defaults; the feature \
+             will return when there's a model + benchmark we trust.",
+            record_args.async_pii_redaction,
+            record_args.async_image_pii_redaction
+        );
     }
 
     // Add auto-destruct watcher
