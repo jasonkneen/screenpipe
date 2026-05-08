@@ -92,7 +92,25 @@ pub trait ImageRedactor: Send + Sync {
 /// out. Same idea as the text-pipeline's per-label policy: the model
 /// detects everything it can, the policy decides what gets redacted.
 ///
-/// Default: redact everything the model finds at score ≥ 0.3.
+/// Default is intentionally conservative: ONLY the `Secret` class,
+/// and only at very high confidence (≥ 0.9). This is a hard-won
+/// default — the original `[Person, Email, Phone, Address, Url,
+/// Company, Repo, Handle, Channel, Id, Date, Secret]` allow-list at
+/// `min_score=0.3` produced catastrophic over-redaction in the wild
+/// (May 2026): rfdetr_v8 routinely flagged code identifiers / file
+/// paths / version strings / sidebar nav items as `Url` / `Id` /
+/// `Repo` / `Handle`, so a user who flipped the toggle on found their
+/// timeline rendered useless within hours. Combined with destructive
+/// writes the originals were unrecoverable. See commit history for
+/// the regression incident.
+///
+/// Re-broadening this default requires:
+///   1. A precision benchmark on real screenpipe content (terminals,
+///      IDEs, browser docs) showing < 1% false-positive rate for the
+///      added classes at the chosen threshold, AND
+///   2. A user-facing policy preset selector in Settings → Privacy
+///      so per-class trade-offs are user-controlled, not silently
+///      destructive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageRedactionPolicy {
     /// Labels whose detections become black boxes. Anything not in
@@ -105,34 +123,23 @@ pub struct ImageRedactionPolicy {
 
 impl Default for ImageRedactionPolicy {
     fn default() -> Self {
+        // Conservative hotfix default — see the type-level docs above
+        // for why we shrank the allow-list and pushed min_score up.
         Self {
-            allow: vec![
-                SpanLabel::Person,
-                SpanLabel::Email,
-                SpanLabel::Phone,
-                SpanLabel::Address,
-                SpanLabel::Url,
-                SpanLabel::Company,
-                SpanLabel::Repo,
-                SpanLabel::Handle,
-                SpanLabel::Channel,
-                SpanLabel::Id,
-                SpanLabel::Date,
-                SpanLabel::Secret,
-            ],
-            min_score: 0.3,
+            allow: vec![SpanLabel::Secret],
+            min_score: 0.9,
         }
     }
 }
 
 impl ImageRedactionPolicy {
-    /// Convenience: redact ONLY the strict-secret class. Useful for
-    /// users who want at-rest protection of credentials but are OK
-    /// with names / company chrome staying visible.
+    /// Convenience: same as the (conservative) `Default` for now —
+    /// kept as a named entry point so callers that explicitly want
+    /// "secrets only" survive future widening of the default.
     pub fn secrets_only() -> Self {
         Self {
             allow: vec![SpanLabel::Secret],
-            min_score: 0.3,
+            min_score: 0.9,
         }
     }
 }

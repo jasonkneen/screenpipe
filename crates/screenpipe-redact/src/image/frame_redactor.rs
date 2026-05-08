@@ -191,15 +191,22 @@ mod tests {
             ImageRegion {
                 bbox: [10, 10, 30, 20],
                 label: SpanLabel::Email,
-                score: 0.9,
+                score: 0.95,
             },
             ImageRegion {
                 bbox: [50, 30, 20, 20],
                 label: SpanLabel::Person,
-                score: 0.1,
+                score: 0.5,
             }, // below floor
         ];
-        let out = redact_frame(&p, &regions, &ImageRedactionPolicy::default()).unwrap();
+        // Policy needs to allow both Email and Person to exercise the
+        // "filtered by score" path — the live default is intentionally
+        // narrow (Secret only) so we make a wider policy here.
+        let policy = ImageRedactionPolicy {
+            allow: vec![SpanLabel::Email, SpanLabel::Person],
+            min_score: 0.9,
+        };
+        let out = redact_frame(&p, &regions, &policy).unwrap();
         assert_eq!(out.regions_redacted, 1);
         assert_eq!(out.regions_dropped, 1);
         assert!(out.redacted_pixels >= 30 * 20);
@@ -248,7 +255,7 @@ mod tests {
         let p = make_test_jpg(d.path());
         let r = ImageRegion {
             bbox: [80, 70, 999, 999],
-            label: SpanLabel::Url,
+            label: SpanLabel::Secret,
             score: 1.0,
         };
         let out = redact_frame(&p, &[r], &ImageRedactionPolicy::default()).unwrap();
