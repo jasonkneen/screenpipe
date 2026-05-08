@@ -185,6 +185,14 @@
           "requireLiteralLeadingDot": false
         },
         {
+          "path": "$HOME/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude",
+          "requireLiteralLeadingDot": false
+        },
+        {
+          "path": "$HOME/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/**",
+          "requireLiteralLeadingDot": false
+        },
+        {
           "path": "$APPDATA/Obsidian",
           "requireLiteralLeadingDot": false
         },

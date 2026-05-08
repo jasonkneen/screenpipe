@@ -23,6 +23,7 @@ import { writeFile, readTextFile, mkdir } from "@tauri-apps/plugin-fs";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { platform } from "@tauri-apps/plugin-os";
 import { join, homeDir, tempDir, dirname } from "@tauri-apps/api/path";
+import { invoke } from "@tauri-apps/api/core";
 import { AppleIntelligenceCard } from "./apple-intelligence-card";
 import { CalendarCard } from "./calendar-card";
 import { GoogleCalendarCard } from "./google-calendar-card";
@@ -71,6 +72,8 @@ async function findClaudeExeOnWindows(): Promise<string | null> {
     const home = await homeDir();
     const localAppData = await join(home, "AppData", "Local");
     const candidates = [
+      // MSIX (Microsoft Store) install
+      await join(localAppData, "Microsoft", "WindowsApps", "Claude.exe"),
       await join(localAppData, "AnthropicClaude", "claude.exe"),
       await join(localAppData, "Programs", "Claude", "Claude.exe"),
       await join(localAppData, "Programs", "claude-desktop", "Claude.exe"),
@@ -93,7 +96,7 @@ import {
   isCursorMcpInstalled,
 } from "@/lib/hooks/use-hardcoded-tiles";
 
-type McpCommand = { command: string; args: string[] };
+type McpCommand = { command: string; args: string[]; env?: Record<string, string> };
 
 /**
  * MCP install config for screenpipe.
@@ -112,14 +115,22 @@ type McpCommand = { command: string; args: string[] };
  * never updates.
  */
 async function buildMcpConfig(opts?: { forceNpx?: boolean }): Promise<McpCommand> {
-  if (opts?.forceNpx) return { command: "npx", args: ["-y", "screenpipe-mcp@latest"] };
+  const apiKey = await invoke<{ key: string | null }>("get_local_api_config")
+    .then(r => r.key ?? undefined)
+    .catch(() => undefined);
+
+  const env: Record<string, string> | undefined = apiKey
+    ? { SCREENPIPE_LOCAL_API_KEY: apiKey }
+    : undefined;
+
+  if (opts?.forceNpx) return { command: "npx", args: ["-y", "screenpipe-mcp@latest"], env };
   try {
     const res = await commands.bunCheck();
     if (res.status === "ok" && res.data.available && res.data.path) {
-      return { command: res.data.path, args: ["x", "screenpipe-mcp@latest"] };
+      return { command: res.data.path, args: ["x", "screenpipe-mcp@latest"], env };
     }
   } catch { /* fall through to npx */ }
-  return { command: "npx", args: ["-y", "screenpipe-mcp@latest"] };
+  return { command: "npx", args: ["-y", "screenpipe-mcp@latest"], env };
 }
 
 async function installCursorMcp(): Promise<void> {
@@ -443,9 +454,27 @@ async function uninstallCursorMcp(): Promise<void> {
 
 function ClaudePanel({ onConnected, onDisconnected }: { onConnected?: () => void; onDisconnected?: () => void }) {
   const [state, setState] = useState<"idle" | "connecting" | "connected">("idle");
+  const [claudeAppInstalled, setClaudeAppInstalled] = useState<boolean | null>(null);
 
   useEffect(() => {
     getInstalledMcpVersion().then(v => { if (v) setState("connected"); }).catch(() => {});
+    const os = platform();
+    if (os === "windows") {
+      // Check for MSIX package folder first, then fall back to traditional exe search
+      homeDir().then(home => join(home, "AppData", "Local", "Packages", "Claude_pzs8sxrjxfjjc"))
+        .then(msixDir => Command.create("cmd", ["/c", "if", "exist", msixDir, "echo", "yes"]).execute())
+        .then(r => {
+          if (r.stdout.trim() === "yes") { setClaudeAppInstalled(true); return; }
+          return findClaudeExeOnWindows().then(exe => setClaudeAppInstalled(!!exe));
+        })
+        .catch(() => setClaudeAppInstalled(false));
+    } else if (os === "macos") {
+      Command.create("sh", ["-c", "ls /Applications/Claude.app"]).execute()
+        .then(r => setClaudeAppInstalled(r.code === 0))
+        .catch(() => setClaudeAppInstalled(false));
+    } else {
+      setClaudeAppInstalled(false);
+    }
   }, []);
 
   const handleConnect = async () => {
@@ -482,6 +511,10 @@ function ClaudePanel({ onConnected, onDisconnected }: { onConnected?: () => void
       const os = platform();
       if (os === "macos") await Command.create("open", ["-a", "Claude"]).execute();
       else if (os === "windows") {
+        // Try MSIX launch via Windows shell app launcher first
+        const msixResult = await Command.create("cmd", ["/c", "start", "", "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude"]).execute().catch(() => null);
+        if (msixResult?.code === 0) return;
+        // Fall back to traditional exe path
         const exe = await findClaudeExeOnWindows();
         if (exe) await Command.create("cmd", ["/c", "start", "", exe]).execute();
         else await openUrl("https://claude.ai/download");
@@ -504,13 +537,19 @@ function ClaudePanel({ onConnected, onDisconnected }: { onConnected?: () => void
             {state === "connecting" ? (<><Loader2 className="h-3 w-3 animate-spin" />connecting...</>) : (<><Download className="h-3 w-3" />connect</>)}
           </Button>
         )}
-        <Button variant="outline" onClick={openClaude} size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal">
-          <ExternalLink className="h-3 w-3" />open claude
-        </Button>
+        {claudeAppInstalled === false ? (
+          <Button variant="outline" onClick={() => openUrl("https://claude.ai/download")} size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal">
+            <ExternalLink className="h-3 w-3" />get claude desktop
+          </Button>
+        ) : (
+          <Button variant="outline" onClick={openClaude} size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal">
+            <ExternalLink className="h-3 w-3" />open claude
+          </Button>
+        )}
       </div>
       {state === "connected" && (
         <p className="text-xs text-muted-foreground">
-          <strong>connected!</strong> restart claude if it was running. try: &quot;what did I do in the last 5 minutes?&quot;
+          <strong>connected!</strong> restart claude desktop and ask: &quot;what did I do in the last 5 minutes?&quot;
         </p>
       )}
     </div>
