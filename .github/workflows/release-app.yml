@@ -1107,9 +1107,13 @@ jobs:
           # hit "fcopyfile failed: No space left on device".
           #
           # Cheaper: delete the original DMG to free space, then create a
-          # fresh DMG from the patched .app via `hdiutil create`. We lose
-          # Tauri's DMG layout (background image, icon positions) but
-          # those are cosmetic — the .app inside still installs and runs.
+          # fresh DMG from a staging dir that contains BOTH the patched
+          # .app AND an `Applications` symlink → /Applications. The
+          # symlink is what gives users the drag-to-install affordance
+          # — without it, opening the DMG just shows the app icon with
+          # nowhere to drag it (regression: v2.4.156 shipped a bare
+          # `-srcfolder "$APP"` and dropped the Applications symlink;
+          # users opened the DMG and couldn't install).
           DMG_DIR="${BUNDLE_DIR}/dmg"
           dmgs=( "${DMG_DIR}"/*.dmg )
           if [ ${#dmgs[@]} -eq 0 ]; then
@@ -1120,18 +1124,35 @@ jobs:
           echo "=== Replacing DMG: ${DMG##*/} ==="
           df -h "$DMG_DIR" | tail -1
           rm -f "$DMG"
+
+          # Stage the .app alongside an Applications symlink. The
+          # symlink itself adds zero bytes to the DMG — when hdiutil
+          # walks the staging dir, the Applications target is OUTSIDE
+          # the staging root so it's preserved as a symlink (not
+          # followed, which would copy /Applications recursively).
+          # We `cp -R` rather than `mv` because the next workflow step
+          # ("Staple .app and rebuild updater tarball") needs the
+          # original .app at bundle/macos/ to staple + repackage for
+          # the Tauri auto-updater.
+          DMG_STAGE="${RUNNER_TEMP:-/tmp}/screenpipe-dmg-stage-$$"
+          mkdir -p "$DMG_STAGE"
+          cp -R "$APP" "$DMG_STAGE/"
+          ln -s /Applications "$DMG_STAGE/Applications"
+
           hdiutil create \
             -volname "Screenpipe" \
-            -srcfolder "$APP" \
+            -srcfolder "$DMG_STAGE" \
             -ov \
             -format UDZO \
             -imagekey zlib-level=9 \
             "$DMG"
 
+          rm -rf "$DMG_STAGE"
+
           # Sign the new DMG so notarization sees a clean cdhash.
           codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG"
           codesign --verify --verbose=2 "$DMG"
-          echo "✅ ${DMG##*/} re-created + signed from patched .app"
+          echo "✅ ${DMG##*/} re-created + signed from patched .app (with Applications symlink)"
 
       - name: Clean up signing cert from login keychain (macOS)
         if: matrix.os_type == 'macos' && always()
