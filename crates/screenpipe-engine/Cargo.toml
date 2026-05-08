@@ -88,12 +88,11 @@ reqwest = { workspace = true }
 # verification + TLS cert pinning for the privacy-filter PII redaction service
 # (see src/privacy_filter.rs). Without this, a MITM or compromised CA could
 # observe unredacted text on its way to the enclave.
-# Pinned to screenpipe's fork on `ring-on-windows` because upstream's
-# default rustls (aws-lc-rs) breaks the Windows MSVC link with
-# unresolved __builtin_bswap{16,32,64} symbols. Fork swaps to ring,
-# which links cleanly on every desktop target. See:
-#   https://github.com/screenpipe/tinfoil-rs/tree/ring-on-windows
-tinfoil = { git = "https://github.com/screenpipe/tinfoil-rs", branch = "ring-on-windows" }
+# Upstream merged the ring-backend fix in tinfoilsh/tinfoil-rs#21
+# (rev 82143d76 on main). Pointed back at upstream now that we don't
+# need the screenpipe fork; can switch to a tagged crates.io release
+# once upstream cuts one.
+tinfoil = { git = "https://github.com/tinfoilsh/tinfoil-rs" }
 
 # Concurrency
 crossbeam = { workspace = true }
