@@ -5461,7 +5461,6 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hmac",
- "num-bigint-dig",
  "p256",
  "p384",
  "p521",
@@ -7034,7 +7033,6 @@ dependencies = [
  "num-iter",
  "num-traits",
  "rand 0.8.5",
- "serde",
  "smallvec 1.15.1",
  "zeroize",
 ]
@@ -9446,7 +9444,6 @@ dependencies = [
  "rand_core 0.10.0-rc-3",
  "sha2 0.11.0-rc.5",
  "signature 3.0.0-rc.6",
- "spki 0.8.0-rc.4",
  "zeroize",
 ]
 
@@ -9516,13 +9513,11 @@ dependencies = [
  "p521",
  "pageant",
  "pbkdf2",
- "pkcs1 0.8.0-rc.4",
  "pkcs5",
  "pkcs8 0.10.2",
  "rand 0.9.2",
  "rand_core 0.10.0-rc-3",
  "ring",
- "rsa 0.10.0-rc.12",
  "russh-cryptovec",
  "russh-util",
  "sec1",
@@ -9977,14 +9972,16 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-app"
-version = "2.4.169"
+version = "2.4.170"
 dependencies = [
+ "aes",
  "anyhow",
  "arboard",
  "async-trait",
  "axum 0.6.20",
  "base64 0.22.1",
  "block",
+ "cbc",
  "cc",
  "chrono",
  "chrono-tz",
@@ -9999,6 +9996,7 @@ dependencies = [
  "futures",
  "futures-channel",
  "gtk",
+ "hmac",
  "hostname",
  "http 0.2.12",
  "icalendar",
@@ -10011,10 +10009,12 @@ dependencies = [
  "objc",
  "objc2 0.6.4",
  "once_cell",
+ "pbkdf2",
  "raw-window-handle",
  "regex",
  "reqwest 0.13.3",
  "resvg",
+ "rusqlite",
  "screenpipe-a11y",
  "screenpipe-audio",
  "screenpipe-config",
@@ -10027,9 +10027,11 @@ dependencies = [
  "screenpipe-screen",
  "screenpipe-secrets",
  "screenpipe-vault",
+ "security-framework",
  "sentry 0.42.0",
  "serde",
  "serde_json",
+ "sha1 0.10.6",
  "sha2 0.10.9",
  "specta",
  "specta-typescript",

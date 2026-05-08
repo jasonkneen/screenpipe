@@ -55,6 +55,8 @@ mod livetext;
 mod livetext_ffi;
 mod oauth;
 mod owned_browser;
+#[cfg(target_os = "macos")]
+mod owned_browser_cookies;
 mod permission_events;
 mod permissions;
 mod pi;

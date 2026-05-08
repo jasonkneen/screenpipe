@@ -52,7 +52,7 @@ use tauri::{
     WebviewWindowBuilder,
 };
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// WebviewWindow label — also used by the frontend Tauri commands.
@@ -582,6 +582,21 @@ pub async fn owned_browser_navigate(app: AppHandle, url: String) -> Result<(), S
     let parsed: url::Url = url
         .parse()
         .map_err(|e: url::ParseError| format!("invalid url: {e}"))?;
+
+    // Inherit the user's logged-in sessions from their real browser
+    // (currently Arc only) before navigating. Reads cookies for the
+    // target host out of the user's Cookies SQLite, AES-CBC-decrypts
+    // them with the macOS Keychain key, and pushes them into the
+    // shared `WKHTTPCookieStore`. Fails open: if Arc isn't installed,
+    // the Keychain prompt is denied, or decryption errors out, we
+    // navigate without injection — same behavior as before.
+    #[cfg(target_os = "macos")]
+    if let Some(host) = parsed.host_str() {
+        let cookies = crate::owned_browser_cookies::cookies_for_host(host).await;
+        if !cookies.is_empty() {
+            inject_cookies_macos(&app, &cookies).await;
+        }
+    }
     let _ = app.emit(NAVIGATE_EVENT, parsed.as_str());
     webview_window.navigate(parsed).map_err(|e| e.to_string())
 }
@@ -594,4 +609,136 @@ pub async fn owned_browser_hide(app: AppHandle) -> Result<(), String> {
         .get_webview_window(WEBVIEW_LABEL)
         .ok_or_else(|| "owned-browser not initialized".to_string())?;
     webview_window.hide().map_err(|e| e.to_string())
+}
+
+/// macOS only: push a batch of cookies (read from the user's real
+/// browser by [`crate::owned_browser_cookies::cookies_for_host`]) into
+/// the shared `WKHTTPCookieStore` so the next `webview.navigate(url)`
+/// call sends them on the request. WKHTTPCookieStore APIs are main-
+/// thread-only, so we hop the work over via `run_on_main_thread` and
+/// wait on a oneshot for completion. Fail-open: any objc / dictionary
+/// build error is logged and ignored — the navigate proceeds without
+/// the cookie that failed.
+#[cfg(target_os = "macos")]
+async fn inject_cookies_macos(app: &AppHandle, cookies: &[crate::owned_browser_cookies::Cookie]) {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::{NSArray, NSDictionary, NSString};
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    let cookies = cookies.to_vec();
+    let (tx, rx) = tokio::sync::oneshot::channel::<usize>();
+    let _ = app.run_on_main_thread(move || {
+        let mut injected: usize = 0;
+        unsafe {
+            let ds_class = class!(WKWebsiteDataStore);
+            let ds: id = msg_send![ds_class, defaultDataStore];
+            if ds.is_null() {
+                let _ = tx.send(0);
+                return;
+            }
+            let store: id = msg_send![ds, httpCookieStore];
+            if store.is_null() {
+                let _ = tx.send(0);
+                return;
+            }
+
+            for c in &cookies {
+                // Build NSDictionary of NSHTTPCookie properties. Keys
+                // are NSHTTPCookie* constants, but for simplicity we
+                // pass the documented string equivalents — Apple has
+                // kept these stable since 10.2 and the dictionary
+                // initializer accepts both.
+                let mut keys: Vec<id> = Vec::with_capacity(8);
+                let mut vals: Vec<id> = Vec::with_capacity(8);
+
+                let push = |k: &str, v: id, keys: &mut Vec<id>, vals: &mut Vec<id>| {
+                    if v.is_null() {
+                        return;
+                    }
+                    let key: id = NSString::alloc(nil).init_str(k);
+                    keys.push(key);
+                    vals.push(v);
+                };
+
+                let name_v: id = NSString::alloc(nil).init_str(&c.name);
+                push("Name", name_v, &mut keys, &mut vals);
+                let value_v: id = NSString::alloc(nil).init_str(&c.value);
+                push("Value", value_v, &mut keys, &mut vals);
+                // Domain must include the leading dot (or not) exactly
+                // as Chromium stored it — that's what controls scope.
+                let domain_v: id = NSString::alloc(nil).init_str(&c.domain);
+                push("Domain", domain_v, &mut keys, &mut vals);
+                let path_v: id = NSString::alloc(nil).init_str(
+                    if c.path.is_empty() { "/" } else { &c.path },
+                );
+                push("Path", path_v, &mut keys, &mut vals);
+                if c.secure {
+                    let s: id = NSString::alloc(nil).init_str("TRUE");
+                    push("Secure", s, &mut keys, &mut vals);
+                }
+                // NSHTTPCookie's documented dictionary builder doesn't
+                // accept HttpOnly directly, but the literal key
+                // "HttpOnly" is forwarded through to the resulting
+                // cookie's flags by NSHTTPCookieStorage's parser.
+                if c.http_only {
+                    let s: id = NSString::alloc(nil).init_str("TRUE");
+                    push("HttpOnly", s, &mut keys, &mut vals);
+                }
+                if let Some(secs) = c.expires_at {
+                    let date_class = class!(NSDate);
+                    let date: id = msg_send![date_class, dateWithTimeIntervalSince1970: secs as f64];
+                    push("Expires", date, &mut keys, &mut vals);
+                } else {
+                    let s: id = NSString::alloc(nil).init_str("TRUE");
+                    push("Discard", s, &mut keys, &mut vals);
+                }
+                // Chromium same_site mapping. -1 = unspecified, omit.
+                let same_site_str = match c.same_site {
+                    0 => Some("None"),
+                    1 => Some("Lax"),
+                    2 => Some("Strict"),
+                    _ => None,
+                };
+                if let Some(ss) = same_site_str {
+                    let v: id = NSString::alloc(nil).init_str(ss);
+                    push("SameSite", v, &mut keys, &mut vals);
+                }
+                // NSHTTPCookieVersion = 0 → classic Netscape semantics.
+                let zero: id = NSString::alloc(nil).init_str("0");
+                push("Version", zero, &mut keys, &mut vals);
+
+                let keys_arr = NSArray::arrayWithObjects(nil, &keys);
+                let vals_arr = NSArray::arrayWithObjects(nil, &vals);
+                let dict: id = NSDictionary::dictionaryWithObjects_forKeys_(
+                    nil, vals_arr, keys_arr,
+                );
+
+                let cookie_class = class!(NSHTTPCookie);
+                let ns_cookie: id =
+                    msg_send![cookie_class, cookieWithProperties: dict];
+                if ns_cookie.is_null() {
+                    continue;
+                }
+                // Fire-and-forget — completion fires async, but
+                // WKHTTPCookieStore commits to its in-memory map
+                // synchronously by the time setCookie returns.
+                let _: () = msg_send![store as *mut Object,
+                    setCookie: ns_cookie
+                    completionHandler: std::ptr::null_mut::<Object>()];
+                injected += 1;
+            }
+        }
+        let _ = tx.send(injected);
+    });
+
+    match rx.await {
+        Ok(n) => debug!(injected = n, "owned-browser: cookies pushed to WKHTTPCookieStore"),
+        Err(_) => warn!("owned-browser: cookie inject channel closed"),
+    }
+
+    // Tiny grace period so the WKHTTPCookieStore's own async commit to
+    // its on-disk store flushes before the upcoming navigate fires its
+    // request. Empirically <10ms; 50 covers slow startups.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 }
