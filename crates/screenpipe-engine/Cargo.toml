@@ -88,14 +88,8 @@ reqwest = { workspace = true }
 # verification + TLS cert pinning for the privacy-filter PII redaction service
 # (see src/privacy_filter.rs). Without this, a MITM or compromised CA could
 # observe unredacted text on its way to the enclave.
-# Upstream merged the ring-backend fix in tinfoilsh/tinfoil-rs#21,
-# but they also bumped reqwest from 0.12 → 0.13.3 (different
-# concurrent change). The rest of screenpipe is still on reqwest 0.12,
-# so consuming upstream main causes a `reqwest::Client` type mismatch
-# in screenpipe-redact's tinfoil adapter. Holding on the fork (which
-# branched from the older 1e0de1a rev with reqwest 0.12) until the
-# wider screenpipe workspace migrates to reqwest 0.13.
-tinfoil = { git = "https://github.com/screenpipe/tinfoil-rs", branch = "ring-on-windows" }
+# Upstream tinfoilsh/tinfoil-rs main, post-#21 (the ring-backend fix).
+tinfoil = { git = "https://github.com/tinfoilsh/tinfoil-rs" }
 
 # Concurrency
 crossbeam = { workspace = true }

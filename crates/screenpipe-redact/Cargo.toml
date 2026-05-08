@@ -32,9 +32,7 @@ thiserror = "1"
 # redaction service. See adapters/tinfoil.rs for the threat model
 # (without this a compromised CA can still observe unredacted text in
 # transit even though the enclave itself is honest).
-# Held on the screenpipe fork because upstream main bumped reqwest
-# 0.12 → 0.13.3 alongside the ring fix. See engine Cargo.toml comment.
-tinfoil = { git = "https://github.com/screenpipe/tinfoil-rs", branch = "ring-on-windows" }
+tinfoil = { git = "https://github.com/tinfoilsh/tinfoil-rs" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
