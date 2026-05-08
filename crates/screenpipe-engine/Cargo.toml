@@ -189,3 +189,8 @@ socket2 = "0.5"
 [target.'cfg(target_os = "macos")'.dependencies]
 cidre = { git = "https://github.com/yury/cidre.git", features = ["ax", "ns", "av", "blocks"] }
 tracing-oslog = { workspace = true }
+
+[package.metadata.cargo-machete]
+# screenpipe-redact: workspace dep added for async PII reconciliation (PR #3188);
+# wiring into engine lands in a follow-up. Cargo compiles it for the workspace either way.
+ignored = ["screenpipe-redact"]

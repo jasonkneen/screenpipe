@@ -246,7 +246,11 @@ wiremock = "0.6"
 
 
 [package.metadata.cargo-machete]
-ignored = ["tauri-utils", "screenpipe-a11y"]
+# screenpipe-redact: workspace dep added for async PII reconciliation (PR #3188);
+# wiring lands in a follow-up. Cargo compiles it for the workspace either way.
+# thiserror: gated behind `enterprise-build` via `dep:thiserror`; cargo-machete
+# can't follow `#[path = ...]` imports into ee/desktop-rust/enterprise_sync.rs.
+ignored = ["tauri-utils", "screenpipe-a11y", "screenpipe-redact", "thiserror"]
 
 [profile.release]
 codegen-units = 1
