@@ -282,14 +282,24 @@ impl AudioStream {
             tokio::task::spawn_blocking(move || {
                 let mut thread_guard = thread_arc_clone.blocking_lock();
                 if let Some(join_handle) = thread_guard.take() {
-                    // Wait for the thread to exit naturally instead of aborting.
-                    // This ensures cpal stream.pause() and drop() complete before
-                    // the stream resources are freed. Aborting creates a race with
-                    // the CoreAudio IO callback, causing use-after-free crashes.
-                    // See https://github.com/screenpipe/screenpipe/issues/3261
-                    // We're in spawn_blocking, so we can block here.
-                    while !join_handle.is_finished() {
+                    // Wait up to 3s for the playback task to exit naturally so cpal
+                    // stream.pause()+drop() can run before the stream resources go
+                    // away — aborting mid-callback is what races the CoreAudio IO
+                    // thread into UAF (issue #3261). If the task is wedged in cpal
+                    // / CoreAudio though, fall back to abort() so stop() can't hang
+                    // forever on quit/device-switch.
+                    let deadline =
+                        std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    while !join_handle.is_finished()
+                        && std::time::Instant::now() < deadline
+                    {
                         std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    if !join_handle.is_finished() {
+                        warn!(
+                            "audio stream thread did not exit within 3s; aborting (potential cpal/CoreAudio wedge)"
+                        );
+                        join_handle.abort();
                     }
                 }
             })
