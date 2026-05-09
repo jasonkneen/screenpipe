@@ -77,7 +77,24 @@ optional = true
 # fine-tune on HF). Pinned to a commit so reproducible across CI
 # runners — bump the rev together with the model checkpoint version
 # whenever opf-rs ships a meaningful change.
+#
+# `default-features = false` drops opf-rs's `metal` default, which
+# transitively pulls in `objc2` and breaks Linux/Windows release
+# builds (`objc2` is Apple-only). The Metal backend is re-enabled
+# below in a target-conditional entry so Mac builds still get GPU
+# acceleration.
 [dependencies.opf]
 git = "https://github.com/screenpipe/opf-rs"
 rev = "e725ad5e8a89ae46e4cb38022a26e746c37329b6"
 optional = true
+default-features = false
+
+# Re-enable the `metal` feature only on Apple targets. Cargo merges
+# target-conditional dep entries into the base entry above, so this
+# is purely additive — Linux/Windows still see `default-features =
+# false` and stay clear of objc2.
+[target.'cfg(target_os = "macos")'.dependencies.opf]
+git = "https://github.com/screenpipe/opf-rs"
+rev = "e725ad5e8a89ae46e4cb38022a26e746c37329b6"
+optional = true
+features = ["metal"]
