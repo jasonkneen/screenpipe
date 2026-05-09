@@ -1243,6 +1243,11 @@ async fn connection_proxy(
         }
     };
 
+    // Capture the extra-root-CA PEM (if any) BEFORE releasing the lock, so
+    // we can build the right reqwest client without keeping the manager
+    // borrow alive across the network call.
+    let extra_root_pem = mgr.find_extra_root_pem(&id);
+
     drop(mgr); // release lock before making external request
 
     // Build the target URL. Query params from the caller (e.g.
@@ -1265,8 +1270,35 @@ async fn connection_proxy(
         id
     );
 
-    // Forward the request
-    let client = reqwest::Client::new();
+    // Forward the request — use a client that trusts any extra root CA the
+    // integration declares (e.g. Bee runs on a private CA, so the default
+    // system-roots client fails the TLS handshake before the request goes
+    // out).
+    let client = if let Some(pem) = extra_root_pem {
+        match reqwest::Certificate::from_pem(pem.as_bytes()) {
+            Ok(cert) => reqwest::Client::builder()
+                .add_root_certificate(cert)
+                .build()
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "proxy: extra-root client build failed for '{}', falling back to default: {}",
+                        id,
+                        e
+                    );
+                    reqwest::Client::new()
+                }),
+            Err(e) => {
+                tracing::warn!(
+                    "proxy: extra_root_pem for '{}' failed to parse, falling back to default: {}",
+                    id,
+                    e
+                );
+                reqwest::Client::new()
+            }
+        }
+    } else {
+        reqwest::Client::new()
+    };
     let mut req = client.request(
         reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET),
         &target_url,

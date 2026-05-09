@@ -167,6 +167,40 @@ pub trait Integration: Send + Sync {
     fn proxy_config(&self) -> Option<&'static ProxyConfig> {
         None
     }
+
+    /// Extra PEM-encoded root certificate to trust when calling this
+    /// integration's API. Required for providers that run on a private
+    /// CA (e.g. Bee uses `CN=BeeCertificateAuthority`, not WebPKI).
+    /// Default `None` — system roots only.
+    ///
+    /// The proxy handler in screenpipe-engine and the integration's own
+    /// `test()` both consult this and rebuild their reqwest client with
+    /// the cert appended via `add_root_certificate` when present.
+    fn extra_root_pem(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+/// Build a reqwest client that trusts the given integration's extra root
+/// CA (if any) on top of the system roots. Falls through to a default
+/// client when the integration uses public CAs. Centralised here so the
+/// proxy handler and `test()` callers stay in sync.
+pub fn build_client_for(integ: &dyn Integration) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder();
+    if let Some(pem) = integ.extra_root_pem() {
+        match reqwest::Certificate::from_pem(pem.as_bytes()) {
+            Ok(cert) => builder = builder.add_root_certificate(cert),
+            Err(e) => tracing::warn!(
+                "extra_root_pem for {} failed to parse — falling back to system roots: {}",
+                integ.def().id,
+                e
+            ),
+        }
+    }
+    builder.build().unwrap_or_else(|e| {
+        tracing::warn!("custom client build failed, using default: {}", e);
+        reqwest::Client::new()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +454,16 @@ impl ConnectionManager {
             .iter()
             .find(|i| i.def().id == id)
             .map(|i| i.def())
+    }
+
+    /// Look up the extra root CA PEM (if any) this integration needs.
+    /// Used by the proxy handler to build a reqwest client that trusts
+    /// providers behind a private CA (e.g. Bee).
+    pub fn find_extra_root_pem(&self, id: &str) -> Option<&'static str> {
+        self.integrations
+            .iter()
+            .find(|i| i.def().id == id)
+            .and_then(|i| i.extra_root_pem())
     }
 
     pub async fn disconnect(&self, id: &str) -> Result<()> {
