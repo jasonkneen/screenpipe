@@ -81,8 +81,6 @@ fn find_unzip() -> Option<std::path::PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn install_onnxruntime() {
-    use reqwest::blocking::Client;
-    use std::time::Duration;
     use std::{path::Path, process::Command};
 
     // Use CPU-only onnxruntime — GPU (DirectML) causes issues on Intel integrated GPUs.
@@ -102,19 +100,29 @@ fn install_onnxruntime() {
     };
     let target_dir = Path::new("../../apps/screenpipe-app-tauri/src-tauri").join(pkg_name);
 
-    // Skip download if already present (CI pre-downloads via workflow step)
+    // Skip download if already present (CI pre-downloads via release-app.yml /
+    // release-cli.yml workflow steps; local Windows devs hit the curl path).
+    //
+    // Why not reqwest: reqwest 0.13's `rustls` feature pulls aws-lc-sys, whose
+    // C objects reference `__builtin_bswap{16,32,64}` — GCC intrinsics MSVC
+    // doesn't understand. Linking *this* build script binary therefore fails
+    // with LNK2001 unresolved external. The screenpipe-app crate works around
+    // it with a bswap_shim.c, but that shim is only linked into the final
+    // binary, not into per-crate build scripts. Curl is universally present
+    // on every CI runner image and on Win10+ by default, so calling it from
+    // Command keeps the build script free of any TLS dep.
     if !target_dir.join("lib").join("onnxruntime.lib").exists() {
         let url = format!(
             "https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/{}",
             zip_name
         );
-        let client = Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .expect("failed to build client");
-        let resp = client.get(&url).send().expect("request failed");
-        let body = resp.bytes().expect("body invalid");
-        fs::write(zip_name, &body).expect("failed to write");
+        let status = Command::new("curl")
+            .args(["-fsSL", "--retry", "3", "-o", zip_name, &url])
+            .status()
+            .expect("failed to execute curl");
+        if !status.success() {
+            panic!("failed to download onnx binary via curl");
+        }
         let unzip_path = find_unzip().expect(
             "could not find unzip executable - please install it via GnuWin32 or add it to PATH",
         );
