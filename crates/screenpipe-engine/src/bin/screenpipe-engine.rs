@@ -1525,9 +1525,7 @@ async fn main() -> anyhow::Result<()> {
                 if std::env::var("TINFOIL_API_KEY").is_ok()
                     || std::env::var("TINFOIL_BASE_URL").is_ok()
                 {
-                    info!(
-                        "text-PII AI step: tinfoil enclave (local opf-rs unavailable: {msg})"
-                    );
+                    info!("text-PII AI step: tinfoil enclave (local opf-rs unavailable: {msg})");
                     let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::from_env());
                     Pipeline::regex_then_ai(ai, PipelineConfig::default())
                 } else {

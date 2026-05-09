@@ -95,10 +95,7 @@ async fn batch_preserves_order() {
         "Cursor — Welcome".to_string(),
         "Outlook — Inbox — marcus.chen@helios-ai.io".to_string(),
     ];
-    let out = adapter
-        .redact_batch(&texts)
-        .await
-        .expect("batch redact ok");
+    let out = adapter.redact_batch(&texts).await.expect("batch redact ok");
     assert_eq!(out.len(), texts.len());
     for (i, r) in out.iter().enumerate() {
         assert_eq!(r.input, texts[i], "batch order must be preserved");

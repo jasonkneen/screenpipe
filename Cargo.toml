@@ -6,7 +6,7 @@ exclude = ["apps/screenpipe-app-tauri/src-tauri", "crates/screenpipe-integration
 resolver = "2"
 
 [workspace.package]
-version = "0.3.324"
+version = "0.3.325"
 authors = ["louis030195 <hi@louis030195.com>"]
 description = ""
 repository = "https://github.com/screenpipe/screenpipe"
@@ -41,7 +41,7 @@ http-cache-reqwest = "0.15.0"
 # variants into `rustls-platform-verifier` (which the `rustls` feature pulls
 # in automatically). The `rustls` feature bundles aws-lc-rs as the provider;
 # Windows MSVC links cleanly because of bswap_shim.c in the tauri app crate.
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "multipart", "json", "form", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "multipart", "json", "form", "query", "rustls"] }
 reqwest-middleware = "0.4.1"
 
 
