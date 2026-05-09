@@ -82,8 +82,7 @@ fn default_model_dir() -> PathBuf {
 /// `main` so a model bump goes through a deliberate code change
 /// (URLs + expected SHA-256s + [`OPF_TEXT_VERSION`] all bumped
 /// together).
-const HF_BASE_URL: &str =
-    "https://huggingface.co/screenpipe/pii-text-redactor/resolve/main";
+const HF_BASE_URL: &str = "https://huggingface.co/screenpipe/pii-text-redactor/resolve/main";
 
 /// File-by-file SHA-256 manifest for v3. Verified after every download
 /// before landing the file at its final path. If a future training run
@@ -153,16 +152,18 @@ impl OpfAdapter {
 /// verified, then renames over `<file>`. A killed process leaves at
 /// most a `.partial` that the next call cleans up.
 async fn ensure_checkpoint_present(model_dir: &Path) -> Result<(), RedactError> {
-    if model_dir.exists() && V3_FILES.iter().all(|(name, sha)| {
-        let p = model_dir.join(name);
-        p.exists() && sha256_matches_file(&p, sha).unwrap_or(false)
-    }) {
+    if model_dir.exists()
+        && V3_FILES.iter().all(|(name, sha)| {
+            let p = model_dir.join(name);
+            p.exists() && sha256_matches_file(&p, sha).unwrap_or(false)
+        })
+    {
         return Ok(());
     }
 
-    tokio::fs::create_dir_all(model_dir).await.map_err(|e| {
-        RedactError::Runtime(format!("mkdir {}: {e}", model_dir.display()))
-    })?;
+    tokio::fs::create_dir_all(model_dir)
+        .await
+        .map_err(|e| RedactError::Runtime(format!("mkdir {}: {e}", model_dir.display())))?;
 
     for (name, expected_sha) in V3_FILES {
         let dst = model_dir.join(name);
@@ -174,11 +175,7 @@ async fn ensure_checkpoint_present(model_dir: &Path) -> Result<(), RedactError> 
     Ok(())
 }
 
-async fn download_one(
-    name: &str,
-    expected_sha: &str,
-    dst: &Path,
-) -> Result<(), RedactError> {
+async fn download_one(name: &str, expected_sha: &str, dst: &Path) -> Result<(), RedactError> {
     let url = format!("{HF_BASE_URL}/{name}");
     let tmp = dst.with_extension("partial");
     let _ = tokio::fs::remove_file(&tmp).await;
