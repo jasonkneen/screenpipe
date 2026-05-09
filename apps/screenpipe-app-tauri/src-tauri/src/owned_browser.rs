@@ -46,6 +46,8 @@ use async_trait::async_trait;
 use screenpipe_connect::connections::browser::{EvalResult, OwnedWebviewHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
@@ -500,10 +502,19 @@ pub async fn owned_browser_set_bounds(
     // floating-globally above other apps' windows. Replaces the old
     // `always_on_top: true` approach which caused the browser to sit on
     // top of MT5 / Claude.ai / etc. when the user switched apps.
-    // Idempotent for same-parent calls; switching parents auto-removes
-    // from the old one (a window can have at most one parent in Cocoa).
+    // Switching parents auto-removes from the old one (a window can have
+    // at most one parent in Cocoa). Cache the bound label so we only
+    // call addChildWindow on actual parent change — set_bounds runs on
+    // every frame during slide-in / drag-resize, and re-binding 60×/s
+    // wakes WindowServer + replayd into a feedback loop.
     #[cfg(target_os = "macos")]
-    bind_owned_browser_to_parent(&app, &parent).await?;
+    {
+        let mut current = bound_parent().lock().await;
+        if current.as_deref() != Some(parent.as_str()) {
+            bind_owned_browser_to_parent(&app, &parent).await?;
+            *current = Some(parent.clone());
+        }
+    }
 
     webview_window
         .set_position(LogicalPosition::new(screen_x, screen_y))
@@ -512,6 +523,20 @@ pub async fn owned_browser_set_bounds(
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| e.to_string())?;
     webview_window.show().map_err(|e| e.to_string())
+}
+
+/// macOS only: parent label currently bound via `addChildWindow:`. The
+/// owned-browser is a singleton, so a single global slot is sufficient.
+/// Read/written from `owned_browser_set_bounds` to skip redundant
+/// bind calls — `addChildWindow:` is documented idempotent but each
+/// call still walks NSWindow's child list and fires
+/// runningboard/WindowServer notifications, which under per-frame
+/// invocation drives the SCK audio-filter daemon (replayd) into a
+/// restart loop.
+#[cfg(target_os = "macos")]
+fn bound_parent() -> &'static Mutex<Option<String>> {
+    static BOUND_PARENT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    BOUND_PARENT.get_or_init(|| Mutex::new(None))
 }
 
 /// macOS only: make the owned-browser a child of the named host window

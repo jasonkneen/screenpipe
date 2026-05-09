@@ -265,40 +265,68 @@ export function BrowserSidebar({ conversationId }: BrowserSidebarProps) {
     const el = placeholderRef.current;
     if (!el) return;
     pushBounds();
-    const ro = new ResizeObserver(() => pushBounds());
-    ro.observe(el);
 
-    const w = getCurrentWindow();
-    const unlistenMovedP = w.listen("tauri://move", () => pushBounds());
-    const unlistenResizedP = w.listen("tauri://resize", () => pushBounds());
-
-    // ResizeObserver only fires on *size* changes — position changes (e.g.
-    // a sibling's flex-basis growing, the chat history sidebar collapsing,
-    // a JSX restructure landing via HMR) leave the native webview stuck at
-    // stale screen coords. Poll the rect each animation frame and re-push
-    // only when something actually moved. Cheap (single getBoundingClientRect
-    // per RAF) and bulletproof against any layout-tree change we don't
-    // explicitly subscribe to.
+    // Burst-mode rect poll. ResizeObserver only fires on *size* changes —
+    // position changes (sibling flex-basis growing, chat-history sidebar
+    // collapsing, JSX restructure via HMR) leave the native webview at
+    // stale screen coords. So we still poll via rAF, but only for a short
+    // window after a known trigger (mount, ResizeObserver fire, window
+    // move/resize). When the rect is stable for BURST_MS, the loop stops
+    // and idle CPU drops to zero. Previously this rAF ran forever, which
+    // pinned tauri://localhost at ~80% and cascaded into WindowServer +
+    // replayd via the per-frame bind/setBounds path.
+    const BURST_MS = 500;
     let raf = 0;
-    let last = { x: 0, y: 0, w: 0, h: 0 };
+    let last = el.getBoundingClientRect();
+    let lastChangeAt = performance.now();
+
     const tick = () => {
       const r = el.getBoundingClientRect();
       if (
-        r.left !== last.x ||
-        r.top !== last.y ||
-        r.width !== last.w ||
-        r.height !== last.h
+        r.left !== last.left ||
+        r.top !== last.top ||
+        r.width !== last.width ||
+        r.height !== last.height
       ) {
-        last = { x: r.left, y: r.top, w: r.width, h: r.height };
+        last = r;
+        lastChangeAt = performance.now();
         pushBounds();
       }
-      raf = requestAnimationFrame(tick);
+      if (performance.now() - lastChangeAt < BURST_MS) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        raf = 0;
+      }
     };
-    raf = requestAnimationFrame(tick);
+
+    const scheduleBurst = () => {
+      lastChangeAt = performance.now();
+      if (!raf) {
+        last = el.getBoundingClientRect();
+        raf = requestAnimationFrame(tick);
+      }
+    };
+
+    const ro = new ResizeObserver(scheduleBurst);
+    ro.observe(el);
+    // Also observe the panel's flex parent — a sibling's flex-basis change
+    // (chat history sidebar collapse, app sidebar toggle) shifts our
+    // position without changing our own size, but the host's content
+    // dimensions do change.
+    const host = panelRef.current?.parentElement;
+    if (host) ro.observe(host);
+
+    const w = getCurrentWindow();
+    const unlistenMovedP = w.listen("tauri://move", scheduleBurst);
+    const unlistenResizedP = w.listen("tauri://resize", scheduleBurst);
+
+    // Initial burst covers the slide-in animation (~200ms) and any
+    // post-mount layout settling.
+    scheduleBurst();
 
     return () => {
       ro.disconnect();
-      cancelAnimationFrame(raf);
+      if (raf) cancelAnimationFrame(raf);
       unlistenMovedP.then((fn) => fn()).catch(() => {});
       unlistenResizedP.then((fn) => fn()).catch(() => {});
     };
