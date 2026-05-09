@@ -270,8 +270,7 @@ impl AudioStream {
             // Sources without a cpal control channel (e.g. `from_wav`,
             // `from_sender_for_test`) drop the receiver, so the send/recv
             // here will error. That's expected — `is_disconnected` already
-            // signals the playback task to exit, and the JoinHandle abort
-            // below cleans up the spawned task. Don't propagate this error.
+            // signals the playback task to exit. Don't propagate this error.
             let (tx, rx) = oneshot::channel();
             if self.stream_control.send(StreamControl::Stop(tx)).is_ok() {
                 let _ = rx.await;
@@ -280,14 +279,21 @@ impl AudioStream {
 
         if let Some(thread_arc) = self.stream_thread.as_ref() {
             let thread_arc_clone = thread_arc.clone();
-            let thread_handle = tokio::task::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || {
                 let mut thread_guard = thread_arc_clone.blocking_lock();
                 if let Some(join_handle) = thread_guard.take() {
-                    join_handle.abort();
+                    // Wait for the thread to exit naturally instead of aborting.
+                    // This ensures cpal stream.pause() and drop() complete before
+                    // the stream resources are freed. Aborting creates a race with
+                    // the CoreAudio IO callback, causing use-after-free crashes.
+                    // See https://github.com/screenpipe/screenpipe/issues/3261
+                    // We're in spawn_blocking, so we can block here.
+                    while !join_handle.is_finished() {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
                 }
-            });
-
-            thread_handle.await?;
+            })
+            .await?;
         }
 
         Ok(())
