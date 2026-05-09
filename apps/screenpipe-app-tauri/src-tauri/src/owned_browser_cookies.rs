@@ -181,7 +181,12 @@ async fn cookies_for_host_impl(host: &str) -> Vec<Cookie> {
                     out.append(&mut c);
                 }
                 Err(e) => {
-                    debug!(source = source.name, "owned-browser cookies: skip — {e}");
+                    // Info-level so we can see WHY each browser was
+                    // skipped without a rebuild — most "0 cookies"
+                    // reports turn out to be (a) browser not
+                    // installed, (b) Keychain prompt denied, or (c)
+                    // sqlite open failure on a locked file.
+                    info!(source = source.name, "owned-browser cookies: skip — {e}");
                 }
             }
         }

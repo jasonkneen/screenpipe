@@ -625,19 +625,35 @@ pub async fn owned_browser_hide(app: AppHandle) -> Result<(), String> {
 /// without injection.
 async fn inject_cookies_for_url(app: &AppHandle, url: &url::Url) {
     let Some(host) = url.host_str() else {
+        info!("owned-browser cookies: skipping inject — url has no host");
         return;
     };
+    info!(host, "owned-browser cookies: pre-navigate inject starting");
     let cookies = crate::owned_browser_cookies::cookies_for_host(host).await;
     if cookies.is_empty() {
+        info!(
+            host,
+            "owned-browser cookies: 0 cookies available — navigating without inject \
+             (causes: real browser not installed, Keychain denied, or no cookies stored \
+             for this host yet)"
+        );
         return;
     }
     info!(
         host,
         count = cookies.len(),
-        "owned-browser: injecting cookies before navigate"
+        "owned-browser cookies: injecting before navigate"
     );
     #[cfg(target_os = "macos")]
-    inject_cookies_macos(app, &cookies).await;
+    {
+        let n = inject_cookies_macos(app, &cookies).await;
+        info!(
+            host,
+            attempted = cookies.len(),
+            injected = n,
+            "owned-browser cookies: WKHTTPCookieStore.setCookie completed"
+        );
+    }
     #[cfg(not(target_os = "macos"))]
     let _ = (app, &cookies); // until Windows/Linux injectors land
 }
@@ -651,7 +667,10 @@ async fn inject_cookies_for_url(app: &AppHandle, url: &url::Url) {
 /// build error is logged and ignored — the navigate proceeds without
 /// the cookie that failed.
 #[cfg(target_os = "macos")]
-async fn inject_cookies_macos(app: &AppHandle, cookies: &[crate::owned_browser_cookies::Cookie]) {
+async fn inject_cookies_macos(
+    app: &AppHandle,
+    cookies: &[crate::owned_browser_cookies::Cookie],
+) -> usize {
     use cocoa::base::{id, nil};
     use cocoa::foundation::{NSArray, NSDictionary, NSString};
     use objc::runtime::Object;
@@ -763,13 +782,17 @@ async fn inject_cookies_macos(app: &AppHandle, cookies: &[crate::owned_browser_c
         let _ = tx.send(injected);
     });
 
-    match rx.await {
-        Ok(n) => debug!(injected = n, "owned-browser: cookies pushed to WKHTTPCookieStore"),
-        Err(_) => warn!("owned-browser: cookie inject channel closed"),
-    }
+    let injected = match rx.await {
+        Ok(n) => n,
+        Err(_) => {
+            warn!("owned-browser: cookie inject channel closed");
+            0
+        }
+    };
 
     // Tiny grace period so the WKHTTPCookieStore's own async commit to
     // its on-disk store flushes before the upcoming navigate fires its
     // request. Empirically <10ms; 50 covers slow startups.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    injected
 }
