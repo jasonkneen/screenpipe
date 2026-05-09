@@ -282,6 +282,32 @@ fn cache() -> &'static Mutex<std::collections::HashMap<String, (Instant, Vec<Coo
     CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
+/// Source name → derived AES-128 key. We cache this per process to
+/// avoid the macOS Keychain prompt firing on every navigate. The
+/// keychain ACL is bound to the binary's cdhash; in dev builds a
+/// rebuild rotates the cdhash and macOS ignores "Always Allow", so
+/// without this cache the user gets a fresh prompt each time the
+/// agent navigates. Plain `std::sync::Mutex` since reads happen
+/// inside `spawn_blocking` (no async context to await on).
+#[cfg(target_os = "macos")]
+static KEY_CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<&'static str, [u8; 16]>>> =
+    OnceLock::new();
+
+#[cfg(target_os = "macos")]
+fn keychain_key(source: &KeychainEntry) -> Result<[u8; 16], String> {
+    let cache = KEY_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Some(k) = cache.lock().ok().and_then(|c| c.get(source.name).copied()) {
+        return Ok(k);
+    }
+    let password = get_generic_password(source.keychain_service, source.keychain_account)
+        .map_err(|e| format!("keychain '{}': {e}", source.keychain_service))?;
+    let key = derive_aes_key(&password);
+    if let Ok(mut c) = cache.lock() {
+        c.insert(source.name, key);
+    }
+    Ok(key)
+}
+
 
 /// Resolve `~/Library` for the current user. We don't use $HOME because
 /// it's not always set when launched as a LaunchAgent. `dirs` would do
@@ -301,14 +327,13 @@ fn read_cookies(source: &KeychainEntry, host: &str) -> Result<Vec<Cookie>, Strin
         return Err(format!("{} not installed (no Cookies file)", source.name));
     }
 
-    // Pull the AES key from Keychain. First call after app launch will
-    // surface a system "Allow" prompt unless the binary is already
-    // trusted — cached after the user clicks Allow once. Each Chromium-
-    // derived browser has its own Keychain entry — Chrome won't unlock
-    // Arc's cookies and vice versa.
-    let password = get_generic_password(source.keychain_service, source.keychain_account)
-        .map_err(|e| format!("keychain '{}': {e}", source.keychain_service))?;
-    let key = derive_aes_key(&password);
+    // Pull the AES key from Keychain. First call after app launch
+    // surfaces a system "Allow" prompt unless the binary is already
+    // trusted; subsequent navigates within the same process hit the
+    // in-memory cache and skip the prompt. Each Chromium-derived
+    // browser has its own Keychain entry — Chrome won't unlock Arc's
+    // cookies and vice versa.
+    let key = keychain_key(source)?;
 
     // Open read-only — the SQLite file is also held open for write by
     // Arc. Read-only + immutable URI prevents lock contention.
@@ -478,6 +503,17 @@ fn derive_aes_key(password: &[u8]) -> [u8; 16] {
 /// Layout: `b"v10" || ciphertext`. AES-128-CBC, IV = 16 spaces (literal
 /// b' '), PKCS7 padding. v11 is the same scheme but with a Linux
 /// libsecret key — we don't see those on macOS.
+///
+/// Plaintext layout (Chromium ~v110+): `SHA-256(host_key) || cookie_value`.
+/// The 32-byte prefix is a cross-origin-tampering integrity guard:
+/// Chromium binds the encrypted blob to the cookie's row's host_key so
+/// that copying a row to a different host_key invalidates the value.
+/// We don't verify it (the row's own host_key is what we need to match
+/// for injection — if a malicious actor swapped rows in the SQLite, the
+/// agent would mis-target anyway), so we just strip the prefix and
+/// return the cookie value. Older browsers without this prefix would
+/// produce a plaintext < 32 bytes for short values, which we treat as
+/// "no prefix, return as-is" — best-effort.
 #[cfg(target_os = "macos")]
 fn decrypt_v10(encrypted: &[u8], key: &[u8; 16]) -> Option<String> {
     if encrypted.len() < 3 || &encrypted[..3] != b"v10" {
@@ -488,7 +524,8 @@ fn decrypt_v10(encrypted: &[u8], key: &[u8; 16]) -> Option<String> {
     let plain = Aes128CbcDec::new(key.into(), &iv.into())
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
         .ok()?;
-    String::from_utf8(plain.to_vec()).ok()
+    let value_bytes = if plain.len() >= 32 { &plain[32..] } else { &plain[..] };
+    String::from_utf8(value_bytes.to_vec()).ok()
 }
 
 #[cfg(all(test, target_os = "macos"))]
