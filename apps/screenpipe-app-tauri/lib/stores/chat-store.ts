@@ -495,6 +495,16 @@ export const useChatStore = create<ChatStore>((set) => ({
         const incomingMsgs = snapshot.messages ?? [];
         const messages =
           incomingMsgs.length >= existingMsgs.length ? incomingMsgs : existingMsgs;
+        // Guard: never let a stale React closure re-enable streaming that
+        // endTurn() already cleared. endTurn writes synchronously into
+        // Zustand, but setIsStreaming/setIsLoading are async React state
+        // updates — a fast nav right after agent_end can snapshot
+        // isStreaming=true from the old render while the store already
+        // holds false. If the store says false, it wins.
+        const isStreaming =
+          existing.isStreaming === false ? false : snapshot.isStreaming;
+        const isLoading =
+          existing.isLoading === false ? false : snapshot.isLoading;
         return {
           sessions: {
             ...s.sessions,
@@ -505,8 +515,8 @@ export const useChatStore = create<ChatStore>((set) => ({
               streamingText: snapshot.streamingText,
               streamingMessageId: snapshot.streamingMessageId,
               contentBlocks: snapshot.contentBlocks,
-              isStreaming: snapshot.isStreaming,
-              isLoading: snapshot.isLoading,
+              isStreaming,
+              isLoading,
               hydratedAt: existing.hydratedAt ?? Date.now(),
               // No updatedAt bump — snapshot is plumbing, not user activity.
             },
