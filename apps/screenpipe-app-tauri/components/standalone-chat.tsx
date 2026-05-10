@@ -1526,6 +1526,8 @@ export function StandaloneChat({
   const piStartInFlightRef = useRef(false);
   const piFirstCallRetried = useRef(false);
   const piStoppedIntentionallyRef = useRef(false);
+  const piIntentionallyStoppedPidsRef = useRef<Set<number>>(new Set());
+  const piPresetSwitchPromiseRef = useRef<Promise<void> | null>(null);
   const piCrashCountRef = useRef(0);
   const piLastCrashRef = useRef(0);
   const piThinkingStartRef = useRef<number | null>(null);
@@ -2669,6 +2671,53 @@ export function StandaloneChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePreset?.provider, activePreset?.url, activePreset?.model, activePreset?.apiKey, (activePreset as any)?.maxTokens, activePreset?.prompt, connections]);
 
+  const setRunningConfigFromProviderConfig = useCallback((providerConfig: NonNullable<ReturnType<typeof buildProviderConfig>>) => {
+    piRunningConfigRef.current = {
+      provider: providerConfig.provider,
+      model: providerConfig.model,
+      url: providerConfig.url,
+      apiKey: providerConfig.apiKey,
+      maxTokens: providerConfig.maxTokens,
+      systemPrompt: providerConfig.systemPrompt,
+      token: settings.user?.token ?? null,
+    };
+  }, [settings.user?.token]);
+
+  const restartCurrentPiSession = useCallback(async (providerConfig: NonNullable<ReturnType<typeof buildProviderConfig>>) => {
+    let currentPid = piInfo?.pid;
+    if (typeof currentPid !== "number") {
+      try {
+        const info = await commands.piInfo(piSessionIdRef.current);
+        if (info.status === "ok") {
+          currentPid = info.data.pid;
+        }
+      } catch {}
+    }
+    if (typeof currentPid === "number") {
+      piIntentionallyStoppedPidsRef.current.add(currentPid);
+      setTimeout(() => {
+        piIntentionallyStoppedPidsRef.current.delete(currentPid);
+      }, 30_000);
+    } else if (piInfo?.running) {
+      piStoppedIntentionallyRef.current = true;
+    }
+
+    const home = await homeDir();
+    const dir = await join(home, ".screenpipe", "pi-chat");
+    const result = await commands.piStart(
+      piSessionIdRef.current,
+      dir,
+      settings.user?.token ?? null,
+      providerConfig,
+    );
+    if (result.status !== "ok" || !result.data.running) {
+      throw new Error(result.status === "error" ? result.error : "Pi did not start");
+    }
+    setPiInfo(result.data);
+    piSessionSyncedRef.current = false;
+    setRunningConfigFromProviderConfig(providerConfig);
+  }, [piInfo?.pid, piInfo?.running, setRunningConfigFromProviderConfig, settings.user?.token]);
+
   // When connections change (e.g., user connected Google Calendar in Settings),
   // silently restart Pi if the system prompt changed and no message is in-flight.
   useEffect(() => {
@@ -2678,7 +2727,7 @@ export function StandaloneChat({
     const running = piRunningConfigRef.current;
     if (!running || running.systemPrompt === config.systemPrompt) return;
     if (piMessageIdRef.current) return; // don't interrupt an active turn
-    commands.piUpdateConfig(settings.user?.token ?? null, config)
+    restartCurrentPiSession(config)
       .then(() => {
         if (piRunningConfigRef.current) {
           piRunningConfigRef.current = { ...piRunningConfigRef.current, systemPrompt: config.systemPrompt };
@@ -2719,7 +2768,7 @@ export function StandaloneChat({
   //   alive and preserves the full conversation, so the user can switch
   //   haiku ↔ sonnet ↔ opus mid-session without losing context.
   // - If any other spawn-time field changed (url, apiKey, maxTokens, systemPrompt):
-  //   full restart via `pi_update_config` — those are baked into Pi's CLI args
+  //   restart the current Pi session — those are baked into Pi's CLI args
   //   and models.json, so the subprocess has to be respawned to see them.
   //
   // Called directly from the AIPresetsSelector onPresetSaved callback.
@@ -2748,40 +2797,51 @@ export function StandaloneChat({
       return;
     }
 
+    const enqueuePresetSwitch = (task: () => Promise<void>) => {
+      const previousSwitch = piPresetSwitchPromiseRef.current;
+      let switchPromise: Promise<void>;
+      switchPromise = (previousSwitch ?? Promise.resolve())
+        .catch(() => {})
+        .then(task)
+        .finally(() => {
+          if (piPresetSwitchPromiseRef.current === switchPromise) {
+            piPresetSwitchPromiseRef.current = null;
+          }
+        });
+      piPresetSwitchPromiseRef.current = switchPromise;
+      return switchPromise;
+    };
+
     if (!spawnTimeFieldsChanged && (providerChanged || modelChanged)) {
       // Hot-swap path — preserves conversation state.
       console.log("[Pi] Hot-swap model:", providerConfig.provider, providerConfig.model);
-      commands
-        .piSetModel(piSessionIdRef.current, providerConfig)
-        .then(() => {
-          piRunningConfigRef.current = {
-            provider: providerConfig.provider,
-            model: providerConfig.model,
-            url: providerConfig.url,
-            apiKey: providerConfig.apiKey,
-            maxTokens: providerConfig.maxTokens,
-            systemPrompt: providerConfig.systemPrompt,
-            token: settings.user?.token ?? null,
-          };
-        })
-        .catch((e) => {
+      enqueuePresetSwitch(async () => {
+        try {
+          await commands.piSetModel(piSessionIdRef.current, providerConfig);
+          setRunningConfigFromProviderConfig(providerConfig);
+        } catch (e) {
           console.error("[Pi] Hot-swap failed, falling back to full restart:", e);
-          piSessionSyncedRef.current = false;
-          commands.piUpdateConfig(settings.user?.token ?? null, providerConfig).catch((err) => {
+          try {
+            await restartCurrentPiSession(providerConfig);
+          } catch (err) {
             console.error("[Pi] Fallback restart also failed:", err);
-          });
-        });
+          }
+        }
+      });
       return;
     }
 
     // Full restart — spawn-time field changed.
     console.log("[Pi] Full restart (spawn-time field changed):", providerConfig.provider, providerConfig.model);
-    piSessionSyncedRef.current = false;
-    commands.piUpdateConfig(settings.user?.token ?? null, providerConfig).catch((e) => {
-      console.error("[Pi] Preset switch failed:", e);
+    enqueuePresetSwitch(async () => {
+      try {
+        await restartCurrentPiSession(providerConfig);
+      } catch (e) {
+        console.error("[Pi] Preset switch failed:", e);
+      }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.user?.token]);
+  }, [settings.user?.token, setRunningConfigFromProviderConfig, restartCurrentPiSession]);
 
   // Listen for Pi / pipe events.
   //
@@ -3422,6 +3482,9 @@ export function StandaloneChat({
         if (!mounted) return;
         if (payload.sessionId !== piSessionIdRef.current) return;
         const terminatedPid = payload.pid;
+        if (typeof terminatedPid === "number" && piIntentionallyStoppedPidsRef.current.delete(terminatedPid)) {
+          return;
+        }
         if (piStoppedIntentionallyRef.current) {
           piStoppedIntentionallyRef.current = false;
           return;
@@ -3970,15 +4033,7 @@ export function StandaloneChat({
             piCrashCountRef.current = 0; // reset crash loop counter on manual start
             // Keep running-config ref in sync so preset watcher doesn't re-trigger
             if (providerConfig) {
-              piRunningConfigRef.current = {
-                provider: providerConfig.provider,
-                model: providerConfig.model,
-                url: providerConfig.url,
-                apiKey: providerConfig.apiKey,
-                maxTokens: providerConfig.maxTokens,
-                systemPrompt: providerConfig.systemPrompt,
-                token: settings.user?.token ?? null,
-              };
+              setRunningConfigFromProviderConfig(providerConfig);
             }
           } else {
             const providerLabel = providerConfig?.provider || "AI";
@@ -3994,6 +4049,10 @@ export function StandaloneChat({
           piStartInFlightRef.current = false;
         }
       }
+    }
+
+    if (piPresetSwitchPromiseRef.current) {
+      await piPresetSwitchPromiseRef.current;
     }
 
     // If a previous message is still processing, abort it first.
@@ -4222,6 +4281,9 @@ export function StandaloneChat({
           if (startRes.status === "ok" && startRes.data.running) {
             setPiInfo(startRes.data);
             piSessionSyncedRef.current = false;
+            if (providerConfig) {
+              setRunningConfigFromProviderConfig(providerConfig);
+            }
             result = await commands.piPrompt(
               piSessionIdRef.current,
               promptMessage,
