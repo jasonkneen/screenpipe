@@ -29,7 +29,7 @@ use crate::transcription::engine::{TranscriptionEngine, TranscriptionSession};
 use crate::transcription::get_or_create_speaker_from_embedding;
 use crate::transcription::{AudioInsertCallback, AudioInsertInfo};
 
-use crate::utils::ffmpeg::read_audio_from_file;
+use crate::utils::ffmpeg::{read_audio_from_file, write_audio_to_file};
 
 /// A completed transcription result persisted to disk as a JSON file.
 /// If the DB write fails (e.g. pool timeout), this file survives and is
@@ -71,6 +71,35 @@ pub fn default_max_batch_duration_secs(engine: &AudioTranscriptionEngine) -> u64
 /// Maximum gap between consecutive chunks (in seconds) before starting a new batch.
 /// A gap >60s likely means a break in conversation (e.g., lunch, switching meetings).
 const MAX_GAP_BETWEEN_CHUNKS_SECS: i64 = 60;
+
+fn merged_audio_temp_path(primary_path: &Path) -> PathBuf {
+    let stem = primary_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("audio");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    primary_path.with_file_name(format!("{stem}.merged-{nonce}.tmp.mp4"))
+}
+
+fn replace_with_merged_audio(
+    primary_path: &Path,
+    samples: &[f32],
+    sample_rate: u32,
+) -> anyhow::Result<()> {
+    // The transcription row keeps pointing at the primary chunk. When a batch spans
+    // multiple 30s files, replace that primary file with the merged audio so UI
+    // playback and displayed duration describe the same media.
+    let tmp_path = merged_audio_temp_path(primary_path);
+    write_audio_to_file(samples, sample_rate, &tmp_path, false)?;
+    std::fs::rename(&tmp_path, primary_path).or_else(|rename_err| {
+        let _ = std::fs::remove_file(primary_path);
+        std::fs::rename(&tmp_path, primary_path).map_err(|_| rename_err)
+    })?;
+    Ok(())
+}
 
 /// Finds audio chunks with no transcription row (orphans), groups consecutive
 /// chunks from the same device, concatenates them, and transcribes the batch.
@@ -364,6 +393,32 @@ pub async fn reconcile_untranscribed(
         // Store the full batch transcription on the FIRST chunk.
         // Delete the remaining chunks (and their files) to avoid duplicates.
         let primary_chunk = valid_chunks[0];
+        if valid_chunks.len() > 1 {
+            let primary_path = PathBuf::from(&primary_chunk.file_path);
+            let samples = combined_samples.clone();
+            match tokio::task::spawn_blocking(move || {
+                replace_with_merged_audio(&primary_path, &samples, sample_rate)
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    error!(
+                        "reconciliation: failed to write merged audio for primary chunk {}: {}",
+                        primary_chunk.id, e
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    error!(
+                        "reconciliation: merged audio task panicked for primary chunk {}: {}",
+                        primary_chunk.id, e
+                    );
+                    continue;
+                }
+            }
+        }
+
         let engine_name = engine_config.to_string();
         let secondary_ids: Vec<i64> = valid_chunks[1..].iter().map(|c| c.id).collect();
 
