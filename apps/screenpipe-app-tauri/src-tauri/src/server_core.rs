@@ -523,8 +523,8 @@ impl ServerCore {
                 let pool = db.pool.clone();
                 tokio::spawn(async move {
                     info!(
-                        "fetching local OPF v3 checkpoint (~2.8 GB on first run, cached at \
-                         ~/.screenpipe/models/opf-v3/)"
+                        "fetching local OPF v6 checkpoint (~2.8 GB on first run, cached at \
+                         ~/.screenpipe/models/opf-v6/)"
                     );
                     let pipeline = match OpfAdapter::load_or_download(OpfConfig::default()).await {
                         Ok(adapter) => {

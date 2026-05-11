@@ -1513,7 +1513,7 @@ async fn main() -> anyhow::Result<()> {
         //   1. local opf-rs (candle, ~74 ms p50 on Mac CPU, 41 ms on
         //      Metal). First run downloads ~2.8 GB from
         //      huggingface.co/screenpipe/pii-text-redactor and verifies
-        //      SHA-256 before landing at ~/.screenpipe/models/opf-v3/.
+        //      SHA-256 before landing at ~/.screenpipe/models/opf-v6/.
         //      Spawned off the boot path so a slow first-run pull
         //      doesn't block the engine.
         //   2. Tinfoil confidential-compute enclave when TINFOIL_*
@@ -1523,8 +1523,8 @@ async fn main() -> anyhow::Result<()> {
         let pool = db.pool.clone();
         tokio::spawn(async move {
             info!(
-                "fetching local OPF v3 checkpoint (~2.8 GB on first run, cached at \
-                 ~/.screenpipe/models/opf-v3/)"
+                "fetching local OPF v6 checkpoint (~2.8 GB on first run, cached at \
+                 ~/.screenpipe/models/opf-v6/)"
             );
             let pipeline = match OpfAdapter::load_or_download(OpfConfig::default()).await {
                 Ok(adapter) => {

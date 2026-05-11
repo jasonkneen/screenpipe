@@ -42,16 +42,19 @@ use async_trait::async_trait;
 use crate::{RedactError, RedactedSpan, RedactionOutput, Redactor, SpanLabel};
 
 /// `redaction_version` schema column expects an integer; this matches
-/// the v3 fine-tune. Bump when we re-train (e.g. v4 with the
-/// screenpipe-shape augmentation in `screenpipe-pii-bench/training/`).
-const OPF_TEXT_VERSION: u32 = 3;
+/// the v6 fine-tune. Bump when we re-train.
+///
+/// v6 = v5 corpus + miss-finder-derived Ralph batches (vendor license
+/// keys, vendor PATs/sba_ tokens, redacted-placeholder hard-negatives).
+/// Bench: zero-leak 80.9% (+1.5pp vs v3), secret_probe 31/34 (+3 vs v5).
+const OPF_TEXT_VERSION: u32 = 6;
 
 /// Configuration for [`OpfAdapter::load`]. Defaults aim at the
 /// canonical screenpipe install layout.
 #[derive(Debug, Clone)]
 pub struct OpfConfig {
     /// Directory containing `config.json` + `model.safetensors`.
-    /// Default: `~/.screenpipe/models/opf-v3`. First-run is created
+    /// Default: `~/.screenpipe/models/opf-v6`. First-run is created
     /// lazily by [`OpfAdapter::load_or_download`] which fetches the
     /// 2.8 GB checkpoint from HuggingFace and verifies SHA-256 before
     /// landing.
@@ -75,29 +78,30 @@ fn default_model_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".screenpipe")
         .join("models")
-        .join("opf-v3")
+        .join("opf-v6")
 }
 
-/// HuggingFace base URL for the canonical v3 fine-tune. Pinned to
-/// `main` so a model bump goes through a deliberate code change
+/// HuggingFace base URL for the canonical v6 fine-tune. Pinned to the
+/// `v6` branch so a model bump goes through a deliberate code change
 /// (URLs + expected SHA-256s + [`OPF_TEXT_VERSION`] all bumped
-/// together).
-const HF_BASE_URL: &str = "https://huggingface.co/screenpipe/pii-text-redactor/resolve/main";
+/// together). v3 still lives under `main` for backward compat with
+/// installs running older app versions.
+const HF_BASE_URL: &str = "https://huggingface.co/screenpipe/pii-text-redactor/resolve/v6";
 
-/// File-by-file SHA-256 manifest for v3. Verified after every download
+/// File-by-file SHA-256 manifest for v6. Verified after every download
 /// before landing the file at its final path. If a future training run
 /// produces a new best, bump [`OPF_TEXT_VERSION`], re-publish to HF,
 /// update these constants. Note: the worker is destructive-only and
 /// does NOT re-redact already-processed rows, so a model-version bump
 /// only takes effect for newly-captured text going forward.
-const V3_FILES: &[(&str, &str)] = &[
+const V6_FILES: &[(&str, &str)] = &[
     (
         "config.json",
         "48cd9b76d5684c445cccd86d2d3cd9887eb0136505f9e1b35c2fd2c5a3707885",
     ),
     (
         "model.safetensors",
-        "4be4d5657db2fa72d7b6190949da334053c09ba0a7c2dffe69d65c3585f38bc8",
+        "247779eb682e267fb44fc14e6f027b4800584c590b30ec748924ecb48d4e1dcd",
     ),
 ];
 
@@ -147,13 +151,13 @@ impl OpfAdapter {
 }
 
 /// Make sure `config.json` + `model.safetensors` are present at
-/// `model_dir` with the SHA-256s pinned in [`V3_FILES`]. Idempotent.
+/// `model_dir` with the SHA-256s pinned in [`V6_FILES`]. Idempotent.
 /// Atomic semantics: each download lands at `<file>.partial`, gets
 /// verified, then renames over `<file>`. A killed process leaves at
 /// most a `.partial` that the next call cleans up.
 async fn ensure_checkpoint_present(model_dir: &Path) -> Result<(), RedactError> {
     if model_dir.exists()
-        && V3_FILES.iter().all(|(name, sha)| {
+        && V6_FILES.iter().all(|(name, sha)| {
             let p = model_dir.join(name);
             p.exists() && sha256_matches_file(&p, sha).unwrap_or(false)
         })
@@ -165,7 +169,7 @@ async fn ensure_checkpoint_present(model_dir: &Path) -> Result<(), RedactError> 
         .await
         .map_err(|e| RedactError::Runtime(format!("mkdir {}: {e}", model_dir.display())))?;
 
-    for (name, expected_sha) in V3_FILES {
+    for (name, expected_sha) in V6_FILES {
         let dst = model_dir.join(name);
         if dst.exists() && sha256_matches_file(&dst, expected_sha).unwrap_or(false) {
             continue;
