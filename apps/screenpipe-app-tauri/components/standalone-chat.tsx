@@ -4781,7 +4781,7 @@ export function StandaloneChat({
             )}
           </div>
         )}
-        {messages.length === 0 && !isPreparingPrefill && hasPresets && hasValidModel && !needsLogin && (
+        {messages.length === 0 && !isPreparingPrefill && hasPresets && hasValidModel && (
           <SummaryCards
             onSendMessage={sendMessage}
             autoSuggestions={autoSuggestions}
@@ -5566,7 +5566,6 @@ export function StandaloneChat({
                 const match = settings.aiPresets?.find((p) => p.id === id);
                 if (match) setActivePreset(match);
               } : undefined}
-              showLoginCta={false}
             />
           </div>
         </div>
