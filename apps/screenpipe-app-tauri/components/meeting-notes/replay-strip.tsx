@@ -135,7 +135,7 @@ export function ReplayStrip({ segments, timeRange }: ReplayStripProps) {
     void fetchFrameSamples(
       new Date(rangeStartMs).toISOString(),
       new Date(rangeEndMs).toISOString(),
-      200,
+      500,
     ).then((s) => {
       if (cancelled) return;
       setFrames(s);
