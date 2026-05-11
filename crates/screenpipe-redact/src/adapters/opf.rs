@@ -36,10 +36,24 @@
 #![cfg(feature = "opf-text")]
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use crate::{RedactError, RedactedSpan, RedactionOutput, Redactor, SpanLabel};
+
+/// Default time the adapter holds the model in memory after its last
+/// batch before dropping it. The text reconciliation worker's batches
+/// are bursty (a few seconds of inference then long quiet periods), so
+/// most of the time we're paying 2.8 GB of resident memory for nothing.
+///
+/// 60 s strikes a balance: consecutive batches (e.g. catching up on a
+/// backlog) don't pay the reload cost, but the steady-state idle case
+/// (no captures arriving) drops back to the ~200 MB baseline.
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// `redaction_version` schema column expects an integer; this matches
 /// the v6 fine-tune. Bump when we re-train.
@@ -105,16 +119,38 @@ const V6_FILES: &[(&str, &str)] = &[
     ),
 ];
 
+/// Lazy lifecycle around `opf::Redactor`.
+///
+/// The 2.8 GB checkpoint is held under a tokio mutex and only
+/// materialised when [`Redactor::redact_batch`] is actually invoked.
+/// A background tokio task (spawned by [`OpfAdapter::spawn_idle_unloader`])
+/// drops the loaded model after [`OpfConfig::idle_timeout`] of no
+/// batches, returning the steady-state RAM back to the ~200 MB
+/// baseline. Reloading on the next batch costs ~2-3 s of cold-start
+/// latency — acceptable since the worker is async, off the capture
+/// hot path, and inherently bursty.
+///
+/// Backed by `Arc<opf::Redactor>` so the unloader can drop its slot
+/// without yanking the model out from under an in-flight batch.
 pub struct OpfAdapter {
-    inner: opf::Redactor,
+    cfg: OpfConfig,
+    state: Mutex<State>,
+    idle_timeout: Duration,
+}
+
+struct State {
+    model: Option<Arc<opf::Redactor>>,
+    last_used: Instant,
 }
 
 impl OpfAdapter {
-    /// Construct from a checkpoint directory. Picks the fastest device
-    /// available on this machine (Metal on Apple Silicon, CPU
-    /// elsewhere). Returns [`RedactError::Unavailable`] when the
-    /// checkpoint isn't on disk so the reconciliation worker can fall
-    /// back to regex-only redaction without a hard failure.
+    /// Validate the checkpoint directory exists. Does **not** load the
+    /// model — that's deferred to the first [`redact_batch`] call.
+    /// Returns [`RedactError::Unavailable`] when the directory is
+    /// missing, so the reconciliation worker can fall back to
+    /// regex-only redaction without a hard failure. Cheaper than the
+    /// old `load`: no GPU init, no 2.8 GB resident allocation until
+    /// it's actually needed.
     pub fn load(cfg: OpfConfig) -> Result<Self, RedactError> {
         if !cfg.model_dir.exists() {
             return Err(RedactError::Unavailable(format!(
@@ -122,12 +158,14 @@ impl OpfAdapter {
                 cfg.model_dir.display()
             )));
         }
-
-        let device = opf::Device::best();
-        let inner = opf::Redactor::from_dir(&cfg.model_dir, device)
-            .map_err(|e| RedactError::Unavailable(format!("opf::Redactor::from_dir: {e}")))?
-            .with_max_seq_len(cfg.max_seq_len);
-        Ok(Self { inner })
+        Ok(Self {
+            cfg,
+            state: Mutex::new(State {
+                model: None,
+                last_used: Instant::now(),
+            }),
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+        })
     }
 
     pub fn load_default() -> Result<Self, RedactError> {
@@ -135,18 +173,83 @@ impl OpfAdapter {
     }
 
     /// Async constructor: download the checkpoint from HuggingFace
-    /// (~2.8 GB, first-run only) and load it. Idempotent — returns
-    /// instantly when files are already present with matching
-    /// SHA-256s. Recommended call site for production.
+    /// (~2.8 GB, first-run only) and return a lazy adapter. The model
+    /// itself doesn't get loaded into memory here — that happens on
+    /// the first inference batch. Recommended call site for production.
     pub async fn load_or_download(cfg: OpfConfig) -> Result<Self, RedactError> {
         ensure_checkpoint_present(&cfg.model_dir).await?;
         Self::load(cfg)
     }
 
-    /// Download to the default location and load. One-shot
-    /// convenience for the typical desktop install path.
+    /// Download to the default location and return a lazy adapter.
     pub async fn load_or_download_default() -> Result<Self, RedactError> {
         Self::load_or_download(OpfConfig::default()).await
+    }
+
+    /// Override the default idle timeout. Calling with `Duration::MAX`
+    /// effectively disables the unloader (keep the model resident
+    /// forever — useful for benchmarks where reload cost would skew
+    /// numbers).
+    pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = idle_timeout;
+        self
+    }
+
+    /// Materialise the model into memory if it isn't already, then
+    /// return an `Arc` clone of it. Cheap on the hot path (Arc::clone)
+    /// once loaded; costs ~2-3 s of GPU init on the first call after
+    /// the unloader has dropped it.
+    async fn ensure_loaded(&self) -> Result<Arc<opf::Redactor>, RedactError> {
+        let mut state = self.state.lock().await;
+        if state.model.is_none() {
+            tracing::info!(
+                model_dir = %self.cfg.model_dir.display(),
+                "loading OPF model (lazy)"
+            );
+            let cfg = self.cfg.clone();
+            let model = tokio::task::block_in_place(|| {
+                let device = opf::Device::best();
+                opf::Redactor::from_dir(&cfg.model_dir, device)
+                    .map(|r| r.with_max_seq_len(cfg.max_seq_len))
+            })
+            .map_err(|e| RedactError::Unavailable(format!("opf::Redactor::from_dir: {e}")))?;
+            state.model = Some(Arc::new(model));
+        }
+        state.last_used = Instant::now();
+        // Cheap: refcount bump on the lazy graph node, no data copy.
+        Ok(Arc::clone(state.model.as_ref().unwrap()))
+    }
+
+    /// Spawn the idle-unload watchdog. Returns its `JoinHandle` —
+    /// caller can drop it (task lives for the lifetime of the engine)
+    /// or join on shutdown.
+    ///
+    /// The task wakes every [`IDLE_CHECK_INTERVAL`], checks
+    /// `last_used`, and drops the model when idle time exceeds
+    /// [`Self::idle_timeout`]. Concurrent batches don't race: a
+    /// dropped `Arc` slot leaves any in-flight `Arc::clone` alive
+    /// until the batch finishes.
+    pub fn spawn_idle_unloader(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(IDLE_CHECK_INTERVAL);
+            // Skip the immediate first tick — gives the first batch
+            // a chance to load before we'd ever consider unloading.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let mut state = self.state.lock().await;
+                if state.model.is_some() && state.last_used.elapsed() >= self.idle_timeout {
+                    tracing::info!(
+                        idle_for_secs = state.last_used.elapsed().as_secs(),
+                        "OPF model idle past threshold — unloading to free ~2.8 GB"
+                    );
+                    // Dropping the Arc here doesn't free immediately if
+                    // an in-flight batch still holds a clone; it frees
+                    // once that batch's clone is dropped.
+                    state.model = None;
+                }
+            }
+        })
     }
 }
 
@@ -296,25 +399,20 @@ impl Redactor for OpfAdapter {
         OPF_TEXT_VERSION
     }
 
-    async fn redact(&self, text: &str) -> Result<RedactionOutput, RedactError> {
-        let text = text.to_string();
-        // opf-rs forward is sync CPU/Metal work; tell tokio to move
-        // other tasks off this worker for the duration.
-        let inner = &self.inner;
-        let result = tokio::task::block_in_place(|| inner.redact(&text));
-        match result {
-            Ok(out) => Ok(map_output(out)),
-            Err(e) => Err(RedactError::Runtime(format!("opf-rs redact: {e}"))),
-        }
-    }
+    // No custom `redact()` — inherit the trait default, which forwards
+    // to `redact_batch` with a 1-element slice. Single load-path means
+    // single place to maintain.
 
     async fn redact_batch(&self, texts: &[String]) -> Result<Vec<RedactionOutput>, RedactError> {
-        let inner = &self.inner;
+        // Lock taken, model materialised if needed, lock released
+        // before inference. The Arc keeps the model alive even if the
+        // idle unloader drops its slot mid-batch.
+        let model = self.ensure_loaded().await?;
         let texts: Vec<String> = texts.to_vec();
         let result = tokio::task::block_in_place(|| {
             texts
                 .iter()
-                .map(|t| inner.redact(t))
+                .map(|t| model.redact(t))
                 .collect::<std::result::Result<Vec<_>, _>>()
         });
         match result {

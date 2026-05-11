@@ -1535,8 +1535,16 @@ async fn main() -> anyhow::Result<()> {
             );
             let pipeline = match OpfAdapter::load_or_download(OpfConfig::default()).await {
                 Ok(adapter) => {
-                    info!("text-PII AI step: local opf-rs (candle)");
-                    let ai: Arc<dyn Redactor> = Arc::new(adapter);
+                    info!(
+                        "text-PII AI step: local opf-rs (candle) — lazy load on first \
+                         batch, idle-unload after 60s of no work"
+                    );
+                    // Wrap in Arc first so we can spawn the idle
+                    // unloader (which needs `Arc<Self>`) and still
+                    // hand the same Arc to the Pipeline.
+                    let adapter = Arc::new(adapter);
+                    let _unloader = Arc::clone(&adapter).spawn_idle_unloader();
+                    let ai: Arc<dyn Redactor> = adapter;
                     Pipeline::regex_then_ai(ai, PipelineConfig::default())
                 }
                 Err(e) => {
