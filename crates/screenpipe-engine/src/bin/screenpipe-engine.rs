@@ -1493,6 +1493,13 @@ async fn main() -> anyhow::Result<()> {
     // Spawn the async PII reconciliation worker (issue #3185).
     // Off by default — only runs when `--async-pii-redaction` is set.
     // The capture path is unaffected either way.
+    if !record_args.async_pii_redaction {
+        info!(
+            "text-PII worker skipped at startup — async_pii_redaction=false. \
+             OPF model (~2.8 GB) will NOT be downloaded or loaded. \
+             Toggle via Settings → Privacy → AI PII removal."
+        );
+    }
     if record_args.async_pii_redaction {
         use screenpipe_redact::{
             adapters::{
@@ -1567,6 +1574,13 @@ async fn main() -> anyhow::Result<()> {
     // Independent of the text worker — users can toggle either one
     // without the other. Requires the rfdetr_v9 model present and at
     // least one of the `onnx-*` or `mlx-mac` cargo features built.
+    if !record_args.async_image_pii_redaction {
+        info!(
+            "image-PII worker skipped at startup — async_image_pii_redaction=false. \
+             rfdetr_v9 model (~108 MB) will NOT be downloaded or loaded. \
+             Toggle via Settings → Privacy → AI PII removal."
+        );
+    }
     if record_args.async_image_pii_redaction {
         use screenpipe_redact::adapters::rfdetr::{RfdetrConfig, RfdetrRedactor};
         use screenpipe_redact::image::worker::{ImageWorker, ImageWorkerConfig};
