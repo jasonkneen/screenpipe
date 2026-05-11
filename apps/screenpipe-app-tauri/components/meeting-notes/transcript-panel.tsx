@@ -4,7 +4,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, X } from "lucide-react";
+import { Check, Copy, Loader2, User, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,14 +33,6 @@ interface SpeakerBlock {
 
 const REFRESH_LIVE_MS = 30_000;
 const MAX_LIMIT = 5000;
-
-/** Stable hash → tailwind hue. Same speaker always gets the same color. */
-function speakerHue(name: string, id: number | null): number {
-  const seed = id != null ? `id:${id}` : `n:${name}`;
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
-  return Math.abs(h) % 360;
-}
 
 function groupBySpeaker(chunks: MeetingAudioChunk[]): SpeakerBlock[] {
   const out: SpeakerBlock[] = [];
@@ -102,6 +94,7 @@ export function TranscriptPanel({
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
+  const [copied, setCopied] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Time bounds for the meeting. Live meetings extend to "now" so newly
@@ -147,6 +140,23 @@ export function TranscriptPanel({
   }, [isOpen, range.start, range.end, isLive]);
 
   const blocks = useMemo(() => groupBySpeaker(chunks), [chunks]);
+
+  // Plain-text dump of the whole transcript (not the filtered view) for
+  // clipboard. Each block becomes a "[hh:mm] name\ntext" paragraph.
+  const handleCopy = async () => {
+    if (blocks.length === 0) return;
+    const text = blocks
+      .map((b) => `[${formatClock(b.startMs)}] ${b.speakerName}\n${b.text}`)
+      .join("\n\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can fail under unsupported permissions — silently
+      // skip; the button just won't flip to the check icon.
+    }
+  };
 
   // Search filter — case-insensitive substring match. Keep the matched block
   // count visible so empty results aren't confusing.
@@ -200,15 +210,31 @@ export function TranscriptPanel({
               </span>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="h-7 w-7 p-0"
-            title="close transcript"
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleCopy}
+              disabled={blocks.length === 0}
+              className="h-7 w-7 p-0"
+              title={copied ? "copied" : "copy transcript"}
+            >
+              {copied ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="h-7 w-7 p-0"
+              title="close transcript"
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </header>
 
         <div className="px-4 py-2 border-b border-border shrink-0">
@@ -263,7 +289,6 @@ function SpeakerParagraph({
   block: SpeakerBlock;
   meetingStartMs: number;
 }) {
-  const hue = speakerHue(block.speakerName, block.speakerId);
   return (
     <li
       className="px-4 py-2.5 hover:bg-muted/30 transition-colors"
@@ -271,12 +296,12 @@ function SpeakerParagraph({
     >
       <div className="flex items-baseline gap-2 mb-1">
         <span
-          className="text-[11px] font-medium tracking-tight"
-          style={{ color: `hsl(${hue} 60% 45%)` }}
+          className="inline-flex items-center gap-1 text-[11px] font-medium tracking-tight text-foreground/80"
           title={
             block.speakerId != null ? `speaker #${block.speakerId}` : "unknown"
           }
         >
+          <User className="h-3 w-3 text-muted-foreground/70 self-center" />
           {block.speakerName}
         </span>
         <span
