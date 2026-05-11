@@ -184,23 +184,8 @@ fn format_remaining(d: std::time::Duration) -> String {
     }
 }
 
-/// Fire-and-forget POST to the local /notify endpoint. Used for pause /
-/// auto-resume notifications; failures are swallowed (notifications are
-/// best-effort UI fluff, not load-bearing).
 fn send_notify(title: impl Into<String>, body: impl Into<String>) {
-    let payload = serde_json::json!({
-        "title": title.into(),
-        "body": body.into(),
-        "type": "system",
-    });
-    tauri::async_runtime::spawn(async move {
-        let client = reqwest::Client::new();
-        let _ = client
-            .post("http://127.0.0.1:11435/notify")
-            .json(&payload)
-            .send()
-            .await;
-    });
+    crate::notifications::client::send(title, body);
 }
 
 /// Immediately rebuild the tray menu (called from main thread after optimistic status set).

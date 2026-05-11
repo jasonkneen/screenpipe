@@ -47,6 +47,10 @@ pub async fn start_monitor_watcher(
         let mut drm_stopped = false;
         // Track whether we stopped recording due to work-hours schedule
         let mut schedule_stopped = false;
+        // Suppresses the topology-changed event for the next reconcile pass.
+        // Set true after DRM/schedule resume so the bulk re-add of monitors
+        // doesn't surface as a user-facing "+N displays detected" notification.
+        let mut suppress_next_topology_event = false;
 
         // Initialize with current monitors
         match list_monitors_detailed().await {
@@ -115,6 +119,7 @@ pub async fn start_monitor_watcher(
                     }
                 }
                 drm_stopped = false;
+                suppress_next_topology_event = true;
                 // Re-populate known_monitors after restart
                 if let Ok(monitors) = list_monitors_detailed().await {
                     known_monitors = monitors.iter().map(|m| m.id()).collect();
@@ -158,6 +163,7 @@ pub async fn start_monitor_watcher(
                     }
                 }
                 schedule_stopped = false;
+                suppress_next_topology_event = true;
                 if let Ok(monitors) = list_monitors_detailed().await {
                     known_monitors = monitors.iter().map(|m| m.id()).collect();
                 }
@@ -248,6 +254,7 @@ pub async fn start_monitor_watcher(
                         Ok(()) => {
                             added.push(serde_json::json!({
                                 "id": monitor_id,
+                                "stable_id": monitor.stable_id(),
                                 "name": monitor.name(),
                                 "width": monitor.width(),
                                 "height": monitor.height(),
@@ -277,7 +284,9 @@ pub async fn start_monitor_watcher(
                 }
             }
 
-            if !initial_pass && (!added.is_empty() || !removed.is_empty()) {
+            if suppress_next_topology_event {
+                suppress_next_topology_event = false;
+            } else if !initial_pass && (!added.is_empty() || !removed.is_empty()) {
                 let active_count = vision_manager.active_monitors().await.len();
                 let _ = screenpipe_events::send_event(
                     "monitor_topology_changed",
