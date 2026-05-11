@@ -1618,7 +1618,13 @@ async fn main() -> anyhow::Result<()> {
                 match RfdetrMlxRedactor::load(mlx_cfg) {
                     Ok(d) => {
                         info!("image-PII detector: rfdetr-mlx (Apple Silicon GPU)");
-                        detector_arc = Some(Arc::new(d) as Arc<dyn ImageRedactor>);
+                        // Lazy-load + 60 s idle-unload — frees the
+                        // ~150–200 MB MLX resident footprint when the
+                        // worker is paused or the reconciliation queue
+                        // has drained. Same pattern as OpfAdapter.
+                        let d = Arc::new(d);
+                        let _ = Arc::clone(&d).spawn_idle_unloader();
+                        detector_arc = Some(d as Arc<dyn ImageRedactor>);
                     }
                     Err(e) => {
                         tracing::info!(

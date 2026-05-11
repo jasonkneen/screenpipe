@@ -223,7 +223,21 @@ impl RfdetrMlxConfig {
 #[cfg(all(feature = "mlx-mac", target_os = "macos", target_arch = "aarch64"))]
 mod imp {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::{Duration, Instant};
+
+    use tokio::sync::Mutex as TokioMutex;
+
+    /// Drop the loaded MLX model + safetensors-resident weights after
+    /// this much idle time on the image-PII worker. Matches the OPF
+    /// text adapter (`super::opf::DEFAULT_IDLE_TIMEOUT`): bursty inference
+    /// → reload cost is acceptable, steady-state RAM matters more.
+    /// On a 107 MB safetensors the resident footprint is ~150–200 MB
+    /// including MLX activation buffers — small in absolute terms, but
+    /// pure waste while recording is paused or the reconciliation queue
+    /// has drained.
+    const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+    const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
     /// Class index → [`SpanLabel`]. Order mirrors
     /// [`crate::adapters::rfdetr::CLASSES`] — fixed by the training
@@ -243,18 +257,33 @@ mod imp {
         SpanLabel::Secret,  // 11
     ];
 
+    /// Inner model handle. `std::sync::Mutex` because
+    /// `RfDetr::detect_with_threshold` takes `&mut self` and the call is
+    /// sync (Metal queue submission). Wrapped in `Arc` so the idle
+    /// unloader can drop the slot in `State` without yanking the model
+    /// out from under an in-flight detect.
+    type ModelHandle = Arc<StdMutex<screenpipe_rfdetr_mlx::RfDetr>>;
+
+    struct State {
+        model: Option<ModelHandle>,
+        last_used: Instant,
+    }
+
     pub struct RfdetrMlxRedactor {
         cfg: RfdetrMlxConfig,
-        // `screenpipe_rfdetr_mlx::RfDetr::detect` takes `&mut self`
-        // because the inner module cache is lazily built on first call.
-        // Mutex keeps the trait `Send + Sync` cheaply.
-        model: Mutex<screenpipe_rfdetr_mlx::RfDetr>,
+        state: TokioMutex<State>,
+        idle_timeout: Duration,
     }
 
     impl RfdetrMlxRedactor {
-        /// Sync constructor. Returns [`RedactError::Unavailable`] if
-        /// the safetensors file is missing or the host macOS is too
-        /// old for MLX — caller can fall back to the ONNX adapter.
+        /// Sync constructor. Validates inputs only — does **not** load
+        /// the model. Returns [`RedactError::Unavailable`] if the
+        /// safetensors file is missing or the host macOS is too old for
+        /// MLX (caller falls back to the ONNX adapter).
+        ///
+        /// First `detect()` pays the model-build cost (~50 ms weight
+        /// walk + initial Metal kernel JIT); subsequent calls within
+        /// the idle window are free.
         pub fn load(cfg: RfdetrMlxConfig) -> Result<Self, RedactError> {
             if !is_runtime_supported() {
                 return Err(RedactError::Unavailable(format!(
@@ -268,52 +297,111 @@ mod imp {
                     cfg.model_path.display()
                 )));
             }
-            let mut model = screenpipe_rfdetr_mlx::RfDetr::load(&cfg.model_path)
-                .map_err(|e| RedactError::Runtime(format!("rfdetr-mlx load: {e}")))?;
-            // Build modules eagerly so first detect() doesn't pay the
-            // weight-tree walk latency (~50 ms on M-series).
-            model
-                .build()
-                .map_err(|e| RedactError::Runtime(format!("rfdetr-mlx build: {e}")))?;
             Ok(Self {
                 cfg,
-                model: Mutex::new(model),
+                state: TokioMutex::new(State {
+                    model: None,
+                    last_used: Instant::now(),
+                }),
+                idle_timeout: DEFAULT_IDLE_TIMEOUT,
             })
         }
 
-        fn infer(&self, image_path: &Path) -> Result<Vec<ImageRegion>, RedactError> {
-            let img = image::open(image_path)
-                .map_err(|e| RedactError::Runtime(format!("open {}: {e}", image_path.display())))?
-                .to_rgb8();
-            let mut model = self
-                .model
-                .lock()
-                .map_err(|_| RedactError::Runtime("rfdetr-mlx model mutex poisoned".into()))?;
-            let dets = model
-                .detect_with_threshold(&img, self.cfg.conf_threshold)
-                .map_err(|e| RedactError::Runtime(format!("rfdetr-mlx detect: {e}")))?;
-            // `Detection.bbox` is already in original-image pixel space
-            // (top-left x/y + w/h). class_idx is bounded to the 12 PII
-            // classes — the model never returns the no_object slot
-            // because postprocess in screenpipe-rfdetr-mlx already
-            // excludes it.
-            let mut out = Vec::with_capacity(dets.len());
-            for d in dets {
-                let [x, y, w, h] = d.bbox;
-                if w <= 0.0 || h <= 0.0 {
-                    continue;
-                }
-                let class = match CLASSES.get(d.class_idx as usize) {
-                    Some(c) => *c,
-                    None => continue, // unreachable in practice; defensive
-                };
-                out.push(ImageRegion {
-                    bbox: [x.max(0.0) as u32, y.max(0.0) as u32, w as u32, h as u32],
-                    label: class,
-                    score: d.score,
-                });
+        /// Override the default idle timeout. `Duration::MAX` keeps the
+        /// model resident forever (benchmarks, never-unload prod).
+        pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+            self.idle_timeout = idle_timeout;
+            self
+        }
+
+        /// Materialise the model under the state lock if needed, then
+        /// return an `Arc` clone. The hot path after the first call is
+        /// just an `Arc::clone` + timestamp bump.
+        async fn ensure_loaded(&self) -> Result<ModelHandle, RedactError> {
+            let mut state = self.state.lock().await;
+            if state.model.is_none() {
+                tracing::info!(
+                    model_path = %self.cfg.model_path.display(),
+                    "loading rfdetr-mlx model (lazy)"
+                );
+                let path = self.cfg.model_path.clone();
+                let model = tokio::task::block_in_place(|| {
+                    let mut m = screenpipe_rfdetr_mlx::RfDetr::load(&path)
+                        .map_err(|e| RedactError::Runtime(format!("rfdetr-mlx load: {e}")))?;
+                    m.build()
+                        .map_err(|e| RedactError::Runtime(format!("rfdetr-mlx build: {e}")))?;
+                    Ok::<_, RedactError>(m)
+                })?;
+                state.model = Some(Arc::new(StdMutex::new(model)));
             }
-            Ok(out)
+            state.last_used = Instant::now();
+            Ok(Arc::clone(state.model.as_ref().unwrap()))
+        }
+
+        /// Spawn the idle-unload watchdog. Wakes every
+        /// [`IDLE_CHECK_INTERVAL`], drops the model when idle exceeds
+        /// [`Self::idle_timeout`]. Mirrors `OpfAdapter::spawn_idle_unloader`.
+        pub fn spawn_idle_unloader(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(IDLE_CHECK_INTERVAL);
+                tick.tick().await; // skip immediate fire
+                loop {
+                    tick.tick().await;
+                    let mut state = self.state.lock().await;
+                    if state.model.is_some() && state.last_used.elapsed() >= self.idle_timeout {
+                        tracing::info!(
+                            idle_secs = state.last_used.elapsed().as_secs(),
+                            "rfdetr-mlx idle — dropping model (will reload on next detect)"
+                        );
+                        // Dropping the Arc slot here is safe: in-flight
+                        // detect calls hold their own Arc::clone and the
+                        // inner mutex; the model stays alive until they
+                        // release it.
+                        state.model = None;
+                    }
+                }
+            })
+        }
+
+        async fn infer(&self, image_path: &Path) -> Result<Vec<ImageRegion>, RedactError> {
+            let model = self.ensure_loaded().await?;
+            let image_path = image_path.to_path_buf();
+            let conf_threshold = self.cfg.conf_threshold;
+            tokio::task::block_in_place(move || {
+                let img = image::open(&image_path)
+                    .map_err(|e| {
+                        RedactError::Runtime(format!("open {}: {e}", image_path.display()))
+                    })?
+                    .to_rgb8();
+                let mut m = model
+                    .lock()
+                    .map_err(|_| RedactError::Runtime("rfdetr-mlx model mutex poisoned".into()))?;
+                let dets = m
+                    .detect_with_threshold(&img, conf_threshold)
+                    .map_err(|e| RedactError::Runtime(format!("rfdetr-mlx detect: {e}")))?;
+                // `Detection.bbox` is already in original-image pixel
+                // space (top-left x/y + w/h). class_idx is bounded to
+                // the 12 PII classes — the model never returns the
+                // no_object slot because postprocess in
+                // screenpipe-rfdetr-mlx already excludes it.
+                let mut out = Vec::with_capacity(dets.len());
+                for d in dets {
+                    let [x, y, w, h] = d.bbox;
+                    if w <= 0.0 || h <= 0.0 {
+                        continue;
+                    }
+                    let class = match CLASSES.get(d.class_idx as usize) {
+                        Some(c) => *c,
+                        None => continue, // defensive
+                    };
+                    out.push(ImageRegion {
+                        bbox: [x.max(0.0) as u32, y.max(0.0) as u32, w as u32, h as u32],
+                        label: class,
+                        score: d.score,
+                    });
+                }
+                Ok(out)
+            })
         }
     }
 
@@ -326,10 +414,7 @@ mod imp {
             VERSION
         }
         async fn detect(&self, image_path: &Path) -> Result<Vec<ImageRegion>, RedactError> {
-            // MLX dispatches to GPU asynchronously; wrap in
-            // `block_in_place` to be honest about the synchronous
-            // image-decode + Metal queue submission inside `infer`.
-            tokio::task::block_in_place(|| self.infer(image_path))
+            self.infer(image_path).await
         }
     }
 }
