@@ -734,6 +734,24 @@ fn update_monitor_cache(monitors: &[SafeMonitor]) {
     }
 }
 
+/// Skip the built-in laptop display when the lid is closed (clamshell mode).
+/// SCK / xcap still enumerate the inactive built-in, so without this filter
+/// we'd attempt to capture a sleeping display every frame — wasted cycles
+/// and black frames in the timeline.
+#[cfg(target_os = "macos")]
+fn is_clamshell_inactive_builtin(display_id: u32) -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGDisplayIsBuiltin(display: u32) -> i32;
+        fn CGDisplayIsActive(display: u32) -> i32;
+        fn CGDisplayIsAsleep(display: u32) -> i32;
+    }
+    unsafe {
+        CGDisplayIsBuiltin(display_id) != 0
+            && (CGDisplayIsActive(display_id) == 0 || CGDisplayIsAsleep(display_id) != 0)
+    }
+}
+
 /// List monitors with detailed error information (permission denied vs no monitors)
 #[cfg(target_os = "macos")]
 pub async fn list_monitors_detailed() -> std::result::Result<Vec<SafeMonitor>, MonitorListError> {
@@ -751,9 +769,11 @@ pub async fn list_monitors_detailed() -> std::result::Result<Vec<SafeMonitor>, M
                         Ok(monitors) if monitors.is_empty() => {
                             Err(MonitorListError::NoMonitorsFound)
                         }
-                        Ok(monitors) => {
-                            Ok(monitors.into_iter().map(SafeMonitor::from_sck).collect())
-                        }
+                        Ok(monitors) => Ok(monitors
+                            .into_iter()
+                            .map(SafeMonitor::from_sck)
+                            .filter(|m| !is_clamshell_inactive_builtin(m.id()))
+                            .collect()),
                         Err(e) => {
                             let err_str = e.to_string();
                             if err_str.contains("permission")
@@ -773,9 +793,11 @@ pub async fn list_monitors_detailed() -> std::result::Result<Vec<SafeMonitor>, M
                         Ok(monitors) if monitors.is_empty() => {
                             Err(MonitorListError::NoMonitorsFound)
                         }
-                        Ok(monitors) => {
-                            Ok(monitors.into_iter().map(SafeMonitor::from_xcap).collect())
-                        }
+                        Ok(monitors) => Ok(monitors
+                            .into_iter()
+                            .map(SafeMonitor::from_xcap)
+                            .filter(|m| !is_clamshell_inactive_builtin(m.id()))
+                            .collect()),
                         Err(e) => {
                             let err_str = e.to_string();
                             if err_str.contains("permission")
