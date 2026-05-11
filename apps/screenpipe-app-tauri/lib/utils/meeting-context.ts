@@ -308,27 +308,47 @@ export function buildEnrichedSummarizePrompt({
     sections.push(`clipboard activity: ${context.clipboardCount} copy/paste events during meeting`);
   }
 
-  // Prompt gives the agent agency over whether to persist the summary back to
-  // the meeting note. There's no hardcoded subscriber on our end intercepting
-  // the chat reply — the agent decides. If the transcript is empty / nothing
-  // worth saving, it should say so and not write. If there's a useful summary,
-  // it appends under "## Summary" via the same PATCH endpoint the autosave
-  // uses, preserving any handwritten notes the user already has.
-  const directive = [
+  const directive = buildMeetingSummarizeInstructions(meeting.id, { followUpAsk: true });
+
+  return `${directive}\n\n${sections.join("\n\n")}`;
+}
+
+/**
+ * Static instructions for "summarize this meeting and patch it back onto the
+ * record". Used by:
+ *   - the in-app "summarize with AI" button (chat path) — passes the known
+ *     meeting id and asks for the speaker/connector follow-up
+ *   - the bundled meeting-summary pipe (background event-triggered path) —
+ *     keep the wording in sync with crates/screenpipe-core/assets/pipes/meeting-summary/pipe.md
+ *
+ * The agent decides whether to PATCH. Empty transcript / nothing worth saving
+ * → say so out loud, skip the PATCH. Useful summary → append under "## Summary"
+ * preserving the user's existing notes via the same endpoint the autosave uses.
+ */
+export function buildMeetingSummarizeInstructions(
+  meetingId: number | string,
+  options?: { followUpAsk?: boolean },
+): string {
+  const lines = [
     `search screenpipe for what happened during this meeting and summarize it: key topics, decisions, action items.`,
     ``,
-    `meeting id: ${meeting.id}`,
+    `meeting id: ${meetingId}`,
     `if your summary is worth saving, append it to the meeting note (and refresh the title in the same call) via:`,
-    `  curl -s -X PATCH "http://localhost:3030/meetings/${meeting.id}" \\`,
+    `  curl -s -X PATCH "http://localhost:3030/meetings/${meetingId}" \\`,
     `    -H "Authorization: Bearer $SCREENPIPE_API_AUTH_KEY" \\`,
     `    -H "Content-Type: application/json" \\`,
     `    -d '{"title": "<NEW_TITLE_OR_OMIT>", "note": "<EXISTING_NOTE>\\n\\n## Summary\\n<YOUR_SUMMARY>"}'`,
     `replace <EXISTING_NOTE> with the meeting's current notes (shown above as "notes:" — empty string if none) so you don't overwrite the user's work; just append your summary under a "## Summary" heading. for the title: if the current "title:" is missing, generic ("untitled", "meeting", just the app name) or doesn't capture what actually happened, replace it with a 5-8 word plain-english title (no quotes, no "meeting about…" prefix) — otherwise omit the field so a user-set title is left alone. if there's nothing useful to summarize (empty transcript, irrelevant audio), say so out loud and skip the PATCH — don't write a placeholder.`,
-    ``,
-    `after the PATCH, ask the user — in one short message — whether they'd like you to (a) update speaker assignments for any of the audio segments above, or (b) push this summary into one of the apps they were using during the meeting (use the "apps used during meeting" + "tabs/docs visited" sections to list 2-3 plausible targets like Notion, Linear, GitHub, etc.). don't act on either until they reply.`,
-  ].join("\n");
+  ];
 
-  return `${directive}\n\n${sections.join("\n\n")}`;
+  if (options?.followUpAsk) {
+    lines.push(
+      ``,
+      `after the PATCH, ask the user — in one short message — whether they'd like you to (a) update speaker assignments for any of the audio segments above, or (b) push this summary into one of the apps they were using during the meeting (use the "apps used during meeting" + "tabs/docs visited" sections to list 2-3 plausible targets like Notion, Linear, GitHub, etc.). don't act on either until they reply.`,
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function formatTimeShort(iso: string): string {
@@ -493,11 +513,25 @@ function renderTranscript(
 interface SearchOcrItem {
   type?: string;
   content?: {
+    /** OCR rows carry `frame_id`; accessibility rows from `search_accessibility`
+     * return one row per frame with the frame's PK as `id` (no `frame_id`
+     * field). Read both — frameIdFromItem() below normalises. */
     frame_id?: number;
+    id?: number;
     timestamp?: string;
     app_name?: string;
     window_name?: string;
   };
+}
+
+function frameIdFromItem(item: SearchOcrItem): number | null {
+  const c = item.content;
+  if (!c) return null;
+  if (typeof c.frame_id === "number") return c.frame_id;
+  // Accessibility/UI rows: server's search_accessibility SELECTs f.id,
+  // which is the frames PK — same space as OCR's frame_id.
+  if (item.type === "UI" && typeof c.id === "number") return c.id;
+  return null;
 }
 
 /**
@@ -610,30 +644,48 @@ export async function fetchMeetingAudio(
  * Pull frames anchored anywhere across [start, end] for the meeting timeline
  * scrubber. Returns a deduped, time-sorted list of {frameId, timestamp}.
  * The caller decides how many to actually render as thumbnails.
+ *
+ * Pulls OCR + accessibility in parallel and merges by frame id. Earlier we
+ * used `content_type=all` with a single 200-row page, but `all` mixes audio
+ * rows (no frame_id) and many OCR rows per frame, so dedup collapsed a
+ * 71-minute meeting to ~66 unique frames — sparse enough that scrubbing
+ * within ~30 s of a frame produced no visible image change. OCR gives one
+ * row per text-bearing frame; accessibility (`search_accessibility`)
+ * returns one row per frame with the frame PK as `content.id`. Both index
+ * into the same `frames` table, so dedup is safe.
  */
 export async function fetchFrameSamples(
   startIso: string,
   endIso: string,
-  limit = 200,
+  limit = 500,
 ): Promise<FrameSample[]> {
-  try {
-    const res = await localFetch(
-      `/search?content_type=all&start_time=${encodeURIComponent(startIso)}&end_time=${encodeURIComponent(endIso)}&limit=${limit}`,
-    );
-    if (!res.ok) return [];
-    const body = (await res.json()) as { data?: SearchOcrItem[] };
-    const seen = new Set<number>();
-    const out: FrameSample[] = [];
-    for (const item of body.data ?? []) {
-      const fid = item.content?.frame_id;
-      const ts = item.content?.timestamp;
-      if (typeof fid !== "number" || !ts || seen.has(fid)) continue;
-      seen.add(fid);
-      out.push({ frameId: fid, timestamp: ts });
+  const fetchOne = async (contentType: "ocr" | "accessibility") => {
+    try {
+      const res = await localFetch(
+        `/search?content_type=${contentType}&start_time=${encodeURIComponent(startIso)}&end_time=${encodeURIComponent(endIso)}&limit=${limit}`,
+      );
+      if (!res.ok) return [] as SearchOcrItem[];
+      const body = (await res.json()) as { data?: SearchOcrItem[] };
+      return body.data ?? [];
+    } catch {
+      return [] as SearchOcrItem[];
     }
-    out.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    return out;
-  } catch {
-    return [];
+  };
+
+  const [ocrItems, uiItems] = await Promise.all([
+    fetchOne("ocr"),
+    fetchOne("accessibility"),
+  ]);
+
+  const seen = new Set<number>();
+  const out: FrameSample[] = [];
+  for (const item of [...ocrItems, ...uiItems]) {
+    const fid = frameIdFromItem(item);
+    const ts = item.content?.timestamp;
+    if (fid == null || !ts || seen.has(fid)) continue;
+    seen.add(fid);
+    out.push({ frameId: fid, timestamp: ts });
   }
+  out.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  return out;
 }
