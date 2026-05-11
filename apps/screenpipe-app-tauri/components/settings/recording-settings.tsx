@@ -1785,7 +1785,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                     CoreAudio system audio capture
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    macOS 14.4+ alternative that survives sleep/wake. <strong>Drops Zoom/Meet/Teams audio</strong> — leave off unless you need the resilience. Restart recording after changing.
+                    New system audio API on macOS 14.4+. May fix some capture issues. Restart recording after changing.
                   </p>
                 </div>
               </div>
