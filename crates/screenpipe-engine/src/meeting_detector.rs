@@ -1494,6 +1494,10 @@ pub enum MeetingState {
         since: Instant,
         /// Whether this meeting was detected in a browser (longer grace period on end).
         is_browser: bool,
+        /// Consecutive scans (so far) that have seen controls while in Ending.
+        /// Used by re-entry hysteresis: a single visible scan no longer flips
+        /// Ending → Active. See `REENTRY_HYSTERESIS_SCANS`.
+        controls_seen_in_ending: u8,
     },
 }
 
@@ -1518,6 +1522,17 @@ const ENDING_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longer timeout for browser-based meetings — tab switching hides AX controls,
 /// so we wait much longer before declaring the meeting ended.
 const ENDING_TIMEOUT_BROWSER: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Re-entry hysteresis: number of consecutive in-call scans required to leave
+/// Ending back to Active. With prod's 5s scan interval, the value `2` means a
+/// single transient blip (one scan that happens to find controls — AX tree
+/// reflow, brief toolbar peek) can no longer flip the state. Two consecutive
+/// visible scans (≥5s of sustained presence) are needed. This cuts log noise
+/// from the Active⇌Ending oscillation observed in Arc/Meet (Meeting 72,
+/// 2026-05-11) without changing end-detection semantics: the grace clock keeps
+/// ticking during transient visibility, so genuine end-of-call still fires
+/// after `ENDING_TIMEOUT` of true silence.
+const REENTRY_HYSTERESIS_SCANS: u8 = 2;
 
 /// Check if an app name is a known browser.
 fn is_browser_app(app_name: &str) -> bool {
@@ -1656,6 +1671,7 @@ pub fn advance_state(
                         started_at,
                         since: Instant::now(),
                         is_browser,
+                        controls_seen_in_ending: 0,
                     },
                     None,
                 )
@@ -1668,6 +1684,7 @@ pub fn advance_state(
             started_at,
             since,
             is_browser,
+            controls_seen_in_ending,
         } => {
             let timeout = if is_browser {
                 ENDING_TIMEOUT_BROWSER
@@ -1675,21 +1692,44 @@ pub fn advance_state(
                 ENDING_TIMEOUT
             };
             if let Some(result) = best_active {
-                info!(
-                    "meeting v2: Ending -> Active (controls reappeared, app={}, id={})",
-                    result.app_name, meeting_id
+                let next_count = controls_seen_in_ending.saturating_add(1);
+                if next_count >= REENTRY_HYSTERESIS_SCANS {
+                    info!(
+                        "meeting v2: Ending -> Active (controls reappeared, app={}, id={}, hysteresis={}/{})",
+                        result.app_name, meeting_id, next_count, REENTRY_HYSTERESIS_SCANS
+                    );
+                    return (
+                        MeetingState::Active {
+                            meeting_id,
+                            app: result.app_name.clone(),
+                            started_at, // preserve original start time
+                            last_seen: Instant::now(),
+                            is_browser,
+                        },
+                        None,
+                    );
+                }
+                debug!(
+                    "meeting v2: Ending (hysteresis {}/{}, app={}, id={})",
+                    next_count, REENTRY_HYSTERESIS_SCANS, result.app_name, meeting_id
                 );
-                (
-                    MeetingState::Active {
+                // Keep the grace clock ticking — a single transient blip
+                // does not extend the timeout.
+                return (
+                    MeetingState::Ending {
                         meeting_id,
-                        app: result.app_name.clone(),
-                        started_at, // preserve original start time
-                        last_seen: Instant::now(),
+                        app,
+                        started_at,
+                        since,
                         is_browser,
+                        controls_seen_in_ending: next_count,
                     },
                     None,
-                )
-            } else if has_output_audio {
+                );
+            }
+            // best_active was None: the hysteresis counter resets so that
+            // re-entry requires N consecutive visible scans, not N total.
+            if has_output_audio {
                 // Audio output is still active — the user likely just switched
                 // tabs/apps, minimized the window, or switched to another meeting app.
                 // Keep the meeting alive regardless of whether UI controls are visible.
@@ -1736,6 +1776,7 @@ pub fn advance_state(
                         started_at,
                         since,
                         is_browser,
+                        controls_seen_in_ending: 0,
                     },
                     None,
                 )
@@ -2629,6 +2670,7 @@ fn handle_no_apps_running(state: MeetingState) -> (MeetingState, Option<i64>) {
                     started_at,
                     since: Instant::now(),
                     is_browser: false, // process exited → use short timeout
+                    controls_seen_in_ending: 0,
                 },
                 None,
             )
@@ -2646,6 +2688,7 @@ fn handle_no_apps_running(state: MeetingState) -> (MeetingState, Option<i64>) {
             app,
             started_at,
             is_browser,
+            controls_seen_in_ending,
         } => {
             let timeout = if is_browser {
                 ENDING_TIMEOUT_BROWSER
@@ -2671,6 +2714,7 @@ fn handle_no_apps_running(state: MeetingState) -> (MeetingState, Option<i64>) {
                         app,
                         started_at,
                         is_browser,
+                        controls_seen_in_ending,
                     },
                     None,
                 )
@@ -3119,9 +3163,16 @@ mod tests {
         let results: Vec<ScanResult> = vec![];
         let (ending_state, _) = advance_state(state, &results, false);
 
-        // Transition back to Active (controls reappear)
-        let results = vec![make_scan_result("Zoom", true, 1)];
-        let (active_again, _) = advance_state(ending_state, &results, false);
+        // Hysteresis: re-entry requires REENTRY_HYSTERESIS_SCANS consecutive
+        // in-call scans. First visible scan stays in Ending with counter=1;
+        // the second one flips back to Active.
+        let visible = vec![make_scan_result("Zoom", true, 1)];
+        let (still_ending, _) = advance_state(ending_state, &visible, false);
+        assert!(
+            matches!(still_ending, MeetingState::Ending { .. }),
+            "first visible scan should not yet revert (hysteresis)"
+        );
+        let (active_again, _) = advance_state(still_ending, &visible, false);
 
         if let MeetingState::Active { started_at, .. } = active_again {
             assert_eq!(
@@ -3136,12 +3187,16 @@ mod tests {
     #[test]
     fn test_ending_to_active_controls_reappear() {
         let started = Utc::now();
+        // Counter already at REENTRY_HYSTERESIS_SCANS - 1 so the next visible
+        // scan reverts to Active. Lets us assert the re-entry transition
+        // without coupling this test to the threshold value.
         let state = MeetingState::Ending {
             meeting_id: 42,
             app: "Zoom".to_string(),
             started_at: started,
             since: Instant::now(),
             is_browser: false,
+            controls_seen_in_ending: REENTRY_HYSTERESIS_SCANS - 1,
         };
         let results = vec![make_scan_result("Zoom", true, 1)];
         let (new_state, action) = advance_state(state, &results, false);
@@ -3154,6 +3209,56 @@ mod tests {
     }
 
     #[test]
+    fn test_ending_hysteresis_blocks_single_blip() {
+        // A single in-call scan during Ending must NOT revert. This is the
+        // regression guard for the Arc auto-hide flap pattern: a transient
+        // visible scan should leave us in Ending with the counter
+        // incremented, not flip back to Active immediately.
+        let state = MeetingState::Ending {
+            meeting_id: 42,
+            app: "Arc".to_string(),
+            started_at: Utc::now(),
+            since: Instant::now(),
+            is_browser: true,
+            controls_seen_in_ending: 0,
+        };
+        let results = vec![make_scan_result("Arc", true, 1)];
+        let (new_state, action) = advance_state(state, &results, false);
+        match new_state {
+            MeetingState::Ending {
+                controls_seen_in_ending,
+                ..
+            } => assert_eq!(controls_seen_in_ending, 1),
+            other => panic!("expected Ending, got {:?}", other),
+        }
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_ending_hysteresis_resets_on_missing_scan() {
+        // A controls-absent scan inside Ending resets the consecutive
+        // counter, so re-entry requires N CONSECUTIVE visible scans, not
+        // N total.
+        let state = MeetingState::Ending {
+            meeting_id: 42,
+            app: "Arc".to_string(),
+            started_at: Utc::now(),
+            since: Instant::now(),
+            is_browser: true,
+            controls_seen_in_ending: REENTRY_HYSTERESIS_SCANS - 1,
+        };
+        let results = vec![make_scan_result("Arc", false, 0)];
+        let (new_state, _) = advance_state(state, &results, false);
+        match new_state {
+            MeetingState::Ending {
+                controls_seen_in_ending,
+                ..
+            } => assert_eq!(controls_seen_in_ending, 0, "counter should reset"),
+            other => panic!("expected Ending, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_ending_to_idle_timeout() {
         let state = MeetingState::Ending {
             meeting_id: 42,
@@ -3163,6 +3268,7 @@ mod tests {
                 .checked_sub(ENDING_TIMEOUT + Duration::from_secs(1))
                 .unwrap_or(Instant::now()),
             is_browser: false,
+            controls_seen_in_ending: 0,
         };
         let results: Vec<ScanResult> = vec![];
         let (new_state, action) = advance_state(state, &results, false);
@@ -3183,6 +3289,7 @@ mod tests {
             started_at: Utc::now(),
             since,
             is_browser: false,
+            controls_seen_in_ending: 0,
         };
         let results: Vec<ScanResult> = vec![];
         let (new_state, action) = advance_state(state, &results, false);
@@ -3203,6 +3310,7 @@ mod tests {
             started_at: Utc::now(),
             since: Instant::now(),
             is_browser: true,
+            controls_seen_in_ending: 0,
         };
         let results: Vec<ScanResult> = vec![];
         let (new_state, action) = advance_state(state, &results, true);
@@ -3234,6 +3342,7 @@ mod tests {
             started_at: Utc::now(),
             since: Instant::now().checked_sub(Duration::from_secs(5)).unwrap(),
             is_browser: false,
+            controls_seen_in_ending: 0,
         };
         let results: Vec<ScanResult> = vec![];
         let (new_state, action) = advance_state(state, &results, true);
@@ -3254,6 +3363,7 @@ mod tests {
                 .checked_sub(ENDING_TIMEOUT + Duration::from_secs(1))
                 .unwrap_or(Instant::now()),
             is_browser: false,
+            controls_seen_in_ending: 0,
         };
         let results: Vec<ScanResult> = vec![];
         let (new_state, action) = advance_state(state, &results, false);
@@ -3293,6 +3403,7 @@ mod tests {
                 .checked_sub(ENDING_TIMEOUT + Duration::from_secs(1))
                 .unwrap_or(Instant::now()),
             is_browser: false,
+            controls_seen_in_ending: 0,
         };
         let (state, action) = advance_state(state, &[], false);
         assert!(matches!(state, MeetingState::Idle));
@@ -3372,6 +3483,7 @@ mod tests {
                 .checked_sub(ENDING_TIMEOUT + Duration::from_secs(1))
                 .unwrap_or(Instant::now()),
             is_browser: false,
+            controls_seen_in_ending: 0,
         };
         let (new_state, ended_id) = handle_no_apps_running(state);
         assert!(matches!(new_state, MeetingState::Idle));
@@ -3386,6 +3498,7 @@ mod tests {
             started_at: Utc::now(),
             since: Instant::now(),
             is_browser: false,
+            controls_seen_in_ending: 0,
         };
         let (new_state, ended_id) = handle_no_apps_running(state);
         assert!(matches!(new_state, MeetingState::Ending { .. }));
@@ -3403,6 +3516,7 @@ mod tests {
                 .checked_sub(ENDING_TIMEOUT + Duration::from_secs(1))
                 .unwrap_or(Instant::now()),
             is_browser: false,
+            controls_seen_in_ending: 0,
         };
         let (_, ended_id) = handle_no_apps_running(state);
         assert!(ended_id.is_none(), "should not end meeting with id=-1");

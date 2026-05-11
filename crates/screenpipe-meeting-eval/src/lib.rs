@@ -397,26 +397,46 @@ pub struct TraceEvent {
 /// treats it as a browser meeting (300s grace) or native (30s).
 /// `true_hangup_t` is optional — when known (e.g. the user marked it),
 /// it enables end_latency and early_end metrics.
+///
+/// Densification: real scanners tick every ~5s and emit the same
+/// in_call result between transitions. Trace files only record
+/// transitions (boundaries), so a naive replay would skip the
+/// intermediate scans that feed re-entry hysteresis. Each boundary
+/// is therefore followed by a Constant range at the configured scan
+/// interval until the next boundary — so the hysteresis counter
+/// sees the same scan cadence the production loop would have seen.
 pub fn scenario_from_events(
     name: &str,
     app: &str,
     events: Vec<TraceEvent>,
     true_hangup_t: Option<f64>,
 ) -> Scenario {
-    let ticks: Vec<TickSpec> = events
-        .iter()
-        .map(|e| TickSpec::Single {
+    let scan_interval = 5.0;
+    let mut ticks: Vec<TickSpec> = Vec::with_capacity(events.len() * 2);
+    for (i, e) in events.iter().enumerate() {
+        ticks.push(TickSpec::Single {
             t: e.t,
             in_call: e.in_call,
-        })
-        .collect();
+        });
+        if let Some(next) = events.get(i + 1) {
+            let span_from = e.t + scan_interval;
+            let span_to = next.t - scan_interval;
+            if span_to >= span_from {
+                ticks.push(TickSpec::Constant {
+                    from: span_from,
+                    to: span_to,
+                    in_call: e.in_call,
+                });
+            }
+        }
+    }
     let audio_ranges = collapse_audio_ranges(&events);
     Scenario {
         meta: Meta {
             name: name.to_string(),
             description: format!("replay of {} trace events", events.len()),
             app: app.to_string(),
-            scan_interval_seconds: 5.0,
+            scan_interval_seconds: scan_interval,
         },
         ticks,
         audio_ranges,
