@@ -51,12 +51,7 @@ struct ConvLnSilu {
 }
 
 impl ConvLnSilu {
-    fn load(
-        w: &Weights,
-        prefix: &str,
-        stride: (i32, i32),
-        padding: (i32, i32),
-    ) -> Result<Self> {
+    fn load(w: &Weights, prefix: &str, stride: (i32, i32), padding: (i32, i32)) -> Result<Self> {
         Ok(Self {
             weight: conv_w(w, &format!("{prefix}.conv.weight"))?,
             ln_w: w.get(&format!("{prefix}.bn.weight"))?.deep_clone(),
@@ -105,9 +100,9 @@ impl Bottleneck {
 ///
 /// Input/output are NHWC tensors of shape `(B, H, W, C_in/out)`.
 struct C2fBlock {
-    cv1: ConvLnSilu,                   // c_in → 2*hidden, 1×1
-    bottlenecks: Vec<Bottleneck>,      // n×Bottleneck(hidden, hidden)
-    cv2: ConvLnSilu,                   // (2 + n)*hidden → c_out, 1×1
+    cv1: ConvLnSilu,              // c_in → 2*hidden, 1×1
+    bottlenecks: Vec<Bottleneck>, // n×Bottleneck(hidden, hidden)
+    cv2: ConvLnSilu,              // (2 + n)*hidden → c_out, 1×1
 }
 
 impl C2fBlock {
@@ -117,15 +112,19 @@ impl C2fBlock {
             .map(|i| Bottleneck::load(w, &format!("{prefix}.m.{i}")))
             .collect::<Result<Vec<_>>>()?;
         let cv2 = ConvLnSilu::load(w, &format!("{prefix}.cv2"), (1, 1), (0, 0))?;
-        Ok(Self { cv1, bottlenecks, cv2 })
+        Ok(Self {
+            cv1,
+            bottlenecks,
+            cv2,
+        })
     }
 
     /// NHWC in → NHWC out.
     fn forward(&self, x: &Array) -> Result<Array> {
         // cv1 maps c_in → 2*hidden, then split along channel dim.
         let y0 = self.cv1.forward(x)?;
-        let parts = ops::split(&y0, 2, 3)
-            .map_err(|e| Error::Inference(format!("C2f cv1 split: {e}")))?;
+        let parts =
+            ops::split(&y0, 2, 3).map_err(|e| Error::Inference(format!("C2f cv1 split: {e}")))?;
         // y[-1] is fed forward; we collect all parts for the final concat.
         let mut chunks: Vec<Array> = parts;
         for b in &self.bottlenecks {
@@ -201,8 +200,7 @@ impl Projector {
     pub fn forward_flat(&self, encoder_outs: &[Array; 4]) -> Result<Array> {
         let nhwc = self.forward(encoder_outs)?;
         let s = nhwc.shape();
-        nhwc
-            .reshape(&[s[0], s[1] * s[2], s[3]])
+        nhwc.reshape(&[s[0], s[1] * s[2], s[3]])
             .map_err(|e| Error::Inference(format!("Projector flatten: {e}")))
     }
 }
@@ -243,8 +241,7 @@ pub fn test_concat_unwindowed(encoder_outs: &[Array; 4]) -> Result<Array> {
         .map(unwindow_to_nhwc)
         .collect::<Result<Vec<_>>>()?;
     let refs: Vec<&Array> = unwindowed.iter().collect();
-    ops::concatenate_axis(&refs, 3)
-        .map_err(|e| Error::Inference(format!("test concat: {e}")))
+    ops::concatenate_axis(&refs, 3).map_err(|e| Error::Inference(format!("test concat: {e}")))
 }
 
 /// Reverses the encoder's window partition to recover an `(B, 24, 24, 384)`

@@ -351,6 +351,9 @@ mod tests {
         assert!(out.redacted.contains("alice@example.com"));
         assert!(out.redacted.contains("415-555-0142"));
         assert!(out.redacted.contains("[SECRET]"));
-        assert!(out.spans.iter().all(|s| s.label == crate::SpanLabel::Secret));
+        assert!(out
+            .spans
+            .iter()
+            .all(|s| s.label == crate::SpanLabel::Secret));
     }
 }

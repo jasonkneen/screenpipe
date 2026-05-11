@@ -217,6 +217,13 @@ pub async fn start_monitor_watcher(
             let active_ids: HashSet<u32> =
                 vision_manager.active_monitors().await.into_iter().collect();
 
+            // Empty active set on a populated known set means this is steady-state
+            // boot, not a hot-plug — suppress the notification so the user doesn't
+            // get "started recording 4 monitors" on every restart.
+            let initial_pass = active_ids.is_empty() && known_monitors.is_empty();
+            let mut added: Vec<serde_json::Value> = Vec::new();
+            let mut removed: Vec<u32> = Vec::new();
+
             // Detect newly connected monitors (filtered by user selection)
             for monitor in &current_monitors {
                 let monitor_id = monitor.id();
@@ -237,11 +244,21 @@ pub async fn start_monitor_watcher(
                         known_monitors.insert(monitor_id);
                     }
 
-                    if let Err(e) = vision_manager.start_monitor(monitor_id).await {
-                        warn!(
-                            "Failed to start recording on monitor {}: {:?}",
-                            monitor_id, e
-                        );
+                    match vision_manager.start_monitor(monitor_id).await {
+                        Ok(()) => {
+                            added.push(serde_json::json!({
+                                "id": monitor_id,
+                                "name": monitor.name(),
+                                "width": monitor.width(),
+                                "height": monitor.height(),
+                            }));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to start recording on monitor {}: {:?}",
+                                monitor_id, e
+                            );
+                        }
                     }
                 }
             }
@@ -250,13 +267,26 @@ pub async fn start_monitor_watcher(
             for monitor_id in &active_ids {
                 if !current_ids.contains(monitor_id) {
                     info!("Monitor {} disconnected, stopping recording", monitor_id);
-                    if let Err(e) = vision_manager.stop_monitor(*monitor_id).await {
-                        warn!(
+                    match vision_manager.stop_monitor(*monitor_id).await {
+                        Ok(()) => removed.push(*monitor_id),
+                        Err(e) => warn!(
                             "Failed to stop recording on monitor {}: {:?}",
                             monitor_id, e
-                        );
+                        ),
                     }
                 }
+            }
+
+            if !initial_pass && (!added.is_empty() || !removed.is_empty()) {
+                let active_count = vision_manager.active_monitors().await.len();
+                let _ = screenpipe_events::send_event(
+                    "monitor_topology_changed",
+                    serde_json::json!({
+                        "added": added,
+                        "removed": removed,
+                        "active_count": active_count,
+                    }),
+                );
             }
 
             // Wait for the next display reconfiguration event. On macOS the

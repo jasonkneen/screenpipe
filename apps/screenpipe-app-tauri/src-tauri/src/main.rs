@@ -59,6 +59,7 @@ mod owned_browser;
 // injects via WKHTTPCookieStore; other platforms compile to a stub
 // `cookies_for_host` that returns empty until Windows (DPAPI + AES-256-
 // GCM + WebView2) and Linux (libsecret + webkit2gtk) readers land.
+mod monitor_events;
 mod owned_browser_cookies;
 mod permission_events;
 mod permissions;
@@ -1878,6 +1879,8 @@ async fn main() {
                     sleep(Duration::from_millis(500)).await;
                 }
             });
+
+            crate::monitor_events::start();
 
             #[cfg(target_os = "macos")]
             crate::window::reset_to_regular_and_refresh_tray(&app_handle);

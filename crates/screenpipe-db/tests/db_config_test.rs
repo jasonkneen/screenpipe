@@ -72,37 +72,37 @@ async fn write_pool_size_increased_for_all_tiers() {
     // Regression test for issue SCREENPIPE-CLI-FZ: connection pool timeout
     // Verifies that the write pool size has been increased to handle
     // high-volume UI event batches without timing out.
-    
+
     let high_config = DbConfig::default();
     assert!(
         high_config.write_pool_max >= 8,
         "high-tier write_pool_max should be at least 8, was {}",
         high_config.write_pool_max
     );
-    
+
     let mid_config = DbConfig::for_tier(screenpipe_config::DeviceTier::Mid);
     assert!(
         mid_config.write_pool_max >= 6,
         "mid-tier write_pool_max should be at least 6, was {}",
         mid_config.write_pool_max
     );
-    
+
     let low_config = DbConfig::for_tier(screenpipe_config::DeviceTier::Low);
     assert!(
         low_config.write_pool_max >= 4,
         "low-tier write_pool_max should be at least 4, was {}",
         low_config.write_pool_max
     );
-    
+
     // Verify all pool configs initialize without error
     let _high_db = DatabaseManager::new("sqlite::memory:", high_config)
         .await
         .expect("high-tier DB with increased write pool should initialize");
-    
+
     let _mid_db = DatabaseManager::new("sqlite::memory:", mid_config)
         .await
         .expect("mid-tier DB with increased write pool should initialize");
-        
+
     let _low_db = DatabaseManager::new("sqlite::memory:", low_config)
         .await
         .expect("low-tier DB with increased write pool should initialize");

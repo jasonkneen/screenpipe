@@ -61,8 +61,12 @@ fn relu(x: &Array) -> Result<Array> {
 fn sigmoid(x: &Array) -> Result<Array> {
     let neg = x.negative().map_err(err("sigmoid neg"))?;
     let exp = ops::exp(&neg).map_err(err("sigmoid exp"))?;
-    let one_plus = exp.add(&Array::from_f32(1.0)).map_err(err("sigmoid 1+exp"))?;
-    Array::from_f32(1.0).divide(&one_plus).map_err(err("sigmoid div"))
+    let one_plus = exp
+        .add(&Array::from_f32(1.0))
+        .map_err(err("sigmoid 1+exp"))?;
+    Array::from_f32(1.0)
+        .divide(&one_plus)
+        .map_err(err("sigmoid div"))
 }
 
 fn exp_(x: &Array) -> Result<Array> {
@@ -111,7 +115,9 @@ fn gen_sineembed_4d(pos: &Array, dim_per_axis: usize) -> Result<Array> {
     let mut encoded_parts: Vec<Array> = Vec::with_capacity(4);
     for p in parts {
         // p: (B, Lq, 1)
-        let scaled = p.multiply(&Array::from_f32(pi2)).map_err(err("scale pi2"))?;
+        let scaled = p
+            .multiply(&Array::from_f32(pi2))
+            .map_err(err("scale pi2"))?;
         // scaled / dim_t  → (B, Lq, dim)
         let inner = scaled.divide(&dim_t_arr).map_err(err("inner"))?;
         // Take sin at even indices, cos at odd. We compute sin and cos for the
@@ -132,7 +138,12 @@ fn gen_sineembed_4d(pos: &Array, dim_per_axis: usize) -> Result<Array> {
         encoded_parts.push(flat);
     }
     // Upstream order: (pos_y, pos_x, pos_w, pos_h) — y first!
-    let order = [&encoded_parts[1], &encoded_parts[0], &encoded_parts[2], &encoded_parts[3]];
+    let order = [
+        &encoded_parts[1],
+        &encoded_parts[0],
+        &encoded_parts[2],
+        &encoded_parts[3],
+    ];
     ops::concatenate_axis(&order, -1).map_err(err("4D concat"))
 }
 
@@ -220,8 +231,8 @@ impl DecoderSelfAttn {
         let k4 = head_split(&k)?;
         let v4 = head_split(&v)?;
         let scale = 1.0 / (SA_HEAD_DIM as f32).sqrt();
-        let ctx = fast::scaled_dot_product_attention(&q4, &k4, &v4, scale, None)
-            .map_err(err("sdpa"))?;
+        let ctx =
+            fast::scaled_dot_product_attention(&q4, &k4, &v4, scale, None).map_err(err("sdpa"))?;
         let ctx_t = ctx.transpose_axes(&[0, 2, 1, 3]).map_err(err("ctx tp"))?;
         let ctx_t = crate::util::contiguous(&ctx_t)?;
         let ctx_flat = ctx_t.reshape(&[b, lq, DIM]).map_err(err("ctx flat"))?;
@@ -251,9 +262,7 @@ impl DecoderCrossAttn {
             attention_weights_w: w
                 .get(&format!("{p}.attention_weights.weight"))?
                 .deep_clone(),
-            attention_weights_b: w
-                .get(&format!("{p}.attention_weights.bias"))?
-                .deep_clone(),
+            attention_weights_b: w.get(&format!("{p}.attention_weights.bias"))?.deep_clone(),
             value_proj_w: w.get(&format!("{p}.value_proj.weight"))?.deep_clone(),
             value_proj_b: w.get(&format!("{p}.value_proj.bias"))?.deep_clone(),
             output_proj_w: w.get(&format!("{p}.output_proj.weight"))?.deep_clone(),
@@ -266,7 +275,12 @@ impl DecoderCrossAttn {
     /// `reference_points`: `(B, Lq, 1, 4)` (single level, cxcywh).
     /// `memory`: `(B, HW, D)` flattened encoder output.
     /// Returns `(B, Lq, D)` — pre-residual.
-    pub fn forward(&self, query: &Array, reference_points: &Array, memory: &Array) -> Result<Array> {
+    pub fn forward(
+        &self,
+        query: &Array,
+        reference_points: &Array,
+        memory: &Array,
+    ) -> Result<Array> {
         let (value, locations, aw_2d) =
             self.compute_def_attn_inputs(query, reference_points, memory)?;
         let gathered = deformable_attn_single_scale(&value, &locations, &aw_2d)?;
@@ -280,7 +294,8 @@ impl DecoderCrossAttn {
         reference_points: &Array,
         memory: &Array,
     ) -> Result<Array> {
-        let (value, locations, aw_2d) = self.compute_def_attn_inputs(query, reference_points, memory)?;
+        let (value, locations, aw_2d) =
+            self.compute_def_attn_inputs(query, reference_points, memory)?;
         deformable_attn_single_scale(&value, &locations, &aw_2d)
     }
 
@@ -306,7 +321,8 @@ impl DecoderCrossAttn {
         // Reference points (B, Lq, 1, 4) -> cxcy (B, Lq, 1, 2), wh (B, Lq, 1, 2).
         // split_sections returns strided views; materialize via the
         // `mlx_contiguous` op so subsequent reshapes are guaranteed clean.
-        let ref_parts = ops::split_sections(reference_points, &[2], -1).map_err(err("ref split"))?;
+        let ref_parts =
+            ops::split_sections(reference_points, &[2], -1).map_err(err("ref split"))?;
         let ref_cxcy_flat = crate::util::contiguous(&ref_parts[0])?;
         let ref_wh_flat = crate::util::contiguous(&ref_parts[1])?;
         let ref_cxcy = ref_cxcy_flat
@@ -411,7 +427,9 @@ impl DecoderLayer {
         let after_sa = ln(&after_sa, &self.norm1_w, &self.norm1_b)?;
         // Cross-attn + residual + LN.
         let q_with_pos = after_sa.add(query_pos).map_err(err("q_with_pos"))?;
-        let ca_out = self.cross_attn.forward(&q_with_pos, refpoints_input, memory)?;
+        let ca_out = self
+            .cross_attn
+            .forward(&q_with_pos, refpoints_input, memory)?;
         let after_ca = after_sa.add(&ca_out).map_err(err("after_ca add"))?;
         let after_ca = ln(&after_ca, &self.norm2_w, &self.norm2_b)?;
         // FFN + residual + LN.
@@ -501,14 +519,12 @@ impl Decoder {
         let max_score = ops::max_axis(&enc_class, -1, false).map_err(err("max class"))?;
         let neg_score = max_score.negative().map_err(err("neg score"))?;
         let argsort = ops::argsort_axis(&neg_score, -1).map_err(err("argsort"))?;
-        let argsort_split = ops::split_sections(&argsort, &[NUM_QUERIES], -1)
-            .map_err(err("argsort split"))?;
+        let argsort_split =
+            ops::split_sections(&argsort, &[NUM_QUERIES], -1).map_err(err("argsort split"))?;
         let topk_idx = &argsort_split[0];
         let enc_bbox_delta = self.enc_bbox_head.forward(&memory)?;
-        let parts = ops::split_sections(&enc_bbox_delta, &[2], -1)
-            .map_err(err("bbox split"))?;
-        let prop_parts = ops::split_sections(&proposals, &[2], -1)
-            .map_err(err("prop split"))?;
+        let parts = ops::split_sections(&enc_bbox_delta, &[2], -1).map_err(err("bbox split"))?;
+        let prop_parts = ops::split_sections(&proposals, &[2], -1).map_err(err("prop split"))?;
         let cxcy = parts[0]
             .multiply(&prop_parts[1])
             .map_err(err("delta cxcy mul"))?
@@ -524,8 +540,8 @@ impl Decoder {
         let topk_idx_dbg = topk_idx.clone();
         let learned = self.refpoint_embed.deep_clone();
         let lr_parts = ops::split_sections(&learned, &[2], -1).map_err(err("learned split"))?;
-        let ts_parts = ops::split_sections(&refpoint_embed_ts, &[2], -1)
-            .map_err(err("ts split"))?;
+        let ts_parts =
+            ops::split_sections(&refpoint_embed_ts, &[2], -1).map_err(err("ts split"))?;
         let new_cxcy = lr_parts[0]
             .multiply(&ts_parts[1])
             .map_err(err("rp cxcy mul"))?
@@ -534,8 +550,8 @@ impl Decoder {
         let new_wh = exp_(&lr_parts[1])?
             .multiply(&ts_parts[1])
             .map_err(err("rp wh mul"))?;
-        let refpoint_embed = ops::concatenate_axis(&[&new_cxcy, &new_wh], -1)
-            .map_err(err("rp concat"))?;
+        let refpoint_embed =
+            ops::concatenate_axis(&[&new_cxcy, &new_wh], -1).map_err(err("rp concat"))?;
         let mut output = self.query_feat.deep_clone();
         let s = refpoint_embed.shape();
         let refpoints_input = refpoint_embed
@@ -588,16 +604,14 @@ impl Decoder {
         let neg_score = max_score.negative().map_err(err("neg score"))?;
         let argsort = ops::argsort_axis(&neg_score, -1).map_err(err("argsort"))?;
         // (B, 576) → take first 300 along axis -1.
-        let argsort_split = ops::split_sections(&argsort, &[NUM_QUERIES], -1)
-            .map_err(err("argsort split"))?;
+        let argsort_split =
+            ops::split_sections(&argsort, &[NUM_QUERIES], -1).map_err(err("argsort split"))?;
         let topk_idx = &argsort_split[0]; // (B, 300) int
 
         // bbox delta + reparam — operates on `enc_memory` (post-Linear+LN).
         let enc_bbox_delta = self.enc_bbox_head.forward(&enc_memory)?;
-        let parts = ops::split_sections(&enc_bbox_delta, &[2], -1)
-            .map_err(err("bbox split"))?;
-        let prop_parts = ops::split_sections(&proposals, &[2], -1)
-            .map_err(err("prop split"))?;
+        let parts = ops::split_sections(&enc_bbox_delta, &[2], -1).map_err(err("bbox split"))?;
+        let prop_parts = ops::split_sections(&proposals, &[2], -1).map_err(err("prop split"))?;
         let cxcy = parts[0]
             .multiply(&prop_parts[1])
             .map_err(err("delta cxcy mul"))?
@@ -617,8 +631,8 @@ impl Decoder {
         // shape, broadcast over batch.
         let learned = self.refpoint_embed.clone(); // (1, 300, 4) — refcount
         let lr_parts = ops::split_sections(&learned, &[2], -1).map_err(err("learned split"))?;
-        let ts_parts = ops::split_sections(&refpoint_embed_ts, &[2], -1)
-            .map_err(err("ts split"))?;
+        let ts_parts =
+            ops::split_sections(&refpoint_embed_ts, &[2], -1).map_err(err("ts split"))?;
         let new_cxcy = lr_parts[0]
             .multiply(&ts_parts[1])
             .map_err(err("rp cxcy mul"))?
@@ -627,8 +641,8 @@ impl Decoder {
         let new_wh = exp_(&lr_parts[1])?
             .multiply(&ts_parts[1])
             .map_err(err("rp wh mul"))?;
-        let refpoint_embed = ops::concatenate_axis(&[&new_cxcy, &new_wh], -1)
-            .map_err(err("rp concat"))?;
+        let refpoint_embed =
+            ops::concatenate_axis(&[&new_cxcy, &new_wh], -1).map_err(err("rp concat"))?;
         // Initial decoder query content = query_feat (1, 300, 256).
         // `clone` is a refcount bump — `output` is reassigned each layer,
         // so we never write through this handle.
@@ -642,7 +656,7 @@ impl Decoder {
 
         // query_sine_embed from refpoints (cxcywh).
         let q_sine = gen_sineembed_4d(&refpoint_embed, 128)?; // (B, 300, 512)
-        // ref_point_head: 2-layer MLP with ReLU between (per upstream MLP class).
+                                                              // ref_point_head: 2-layer MLP with ReLU between (per upstream MLP class).
         let qp0 = linear(&q_sine, &self.ref_point_head_w0, &self.ref_point_head_b0)?;
         let qp0a = relu(&qp0)?;
         let query_pos = linear(&qp0a, &self.ref_point_head_w1, &self.ref_point_head_b1)?;
@@ -662,8 +676,7 @@ impl Decoder {
         let logits = linear(&output, &self.class_head_w, &self.class_head_b)?;
         let bbox_delta = self.bbox_head.forward(&output)?;
         // Final bbox refinement vs. refpoint_embed (cxcywh).
-        let rb_parts = ops::split_sections(&refpoint_embed, &[2], -1)
-            .map_err(err("rb split"))?;
+        let rb_parts = ops::split_sections(&refpoint_embed, &[2], -1).map_err(err("rb split"))?;
         let bd_parts = ops::split_sections(&bbox_delta, &[2], -1).map_err(err("bd split"))?;
         let final_cxcy = bd_parts[0]
             .multiply(&rb_parts[1])
@@ -673,8 +686,8 @@ impl Decoder {
         let final_wh = exp_(&bd_parts[1])?
             .multiply(&rb_parts[1])
             .map_err(err("final wh mul"))?;
-        let boxes = ops::concatenate_axis(&[&final_cxcy, &final_wh], -1)
-            .map_err(err("boxes cat"))?;
+        let boxes =
+            ops::concatenate_axis(&[&final_cxcy, &final_wh], -1).map_err(err("boxes cat"))?;
 
         Ok((boxes, logits))
     }
@@ -686,11 +699,8 @@ impl Decoder {
         let (b, _len, _c) = (s[0], s[1], s[2]);
         let k = idx.shape()[1];
         // Broadcast idx (B, K) → (B, K, last_dim) so take_along_axis can gather.
-        let idx_3d = idx
-            .reshape(&[b, k, 1])
-            .map_err(err("idx 3d"))?;
-        let idx_bc = ops::broadcast_to(&idx_3d, &[b, k, last_dim])
-            .map_err(err("idx bc"))?;
+        let idx_3d = idx.reshape(&[b, k, 1]).map_err(err("idx 3d"))?;
+        let idx_bc = ops::broadcast_to(&idx_3d, &[b, k, last_dim]).map_err(err("idx bc"))?;
         x.take_along_axis(&idx_bc, 1).map_err(err("gather"))
     }
 }

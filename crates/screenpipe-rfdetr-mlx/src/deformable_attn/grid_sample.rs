@@ -35,14 +35,8 @@ pub fn grid_sample_2d(input: &Array, grid: &Array) -> Result<Array> {
     let half = Array::from_f32(0.5);
     let w_f = Array::from_f32(w as f32);
     let h_f = Array::from_f32(h as f32);
-    let ix = mul(
-        &sub(&mul(&add(&gx, &one)?, &w_f)?, &one)?,
-        &half,
-    )?;
-    let iy = mul(
-        &sub(&mul(&add(&gy, &one)?, &h_f)?, &one)?,
-        &half,
-    )?;
+    let ix = mul(&sub(&mul(&add(&gx, &one)?, &w_f)?, &one)?, &half)?;
+    let iy = mul(&sub(&mul(&add(&gy, &one)?, &h_f)?, &one)?, &half)?;
 
     let ix0 = ops::floor(&ix).map_err(e("ix0 floor"))?;
     let iy0 = ops::floor(&iy).map_err(e("iy0 floor"))?;
@@ -118,12 +112,13 @@ fn gather_corner(
     w_out: i32,
 ) -> Result<Array> {
     let e = err_inf;
-    let idx_i = idx_f.as_dtype(mlx_rs::Dtype::Int32).map_err(e("idx cast"))?;
+    let idx_i = idx_f
+        .as_dtype(mlx_rs::Dtype::Int32)
+        .map_err(e("idx cast"))?;
     let idx_b = idx_i
         .reshape(&[b, 1, h_out * w_out])
         .map_err(e("idx reshape"))?;
-    let idx_bc = ops::broadcast_to(&idx_b, &[b, c, h_out * w_out])
-        .map_err(e("idx broadcast"))?;
+    let idx_bc = ops::broadcast_to(&idx_b, &[b, c, h_out * w_out]).map_err(e("idx broadcast"))?;
     let gathered = input_flat
         .take_along_axis(&idx_bc, 2)
         .map_err(e("take_along_axis"))?;
