@@ -12,6 +12,7 @@ import {
   Copy,
   FileText,
   Loader2,
+  Settings2,
   Sparkles,
   Square,
   Trash2,
@@ -50,6 +51,14 @@ import { Receipts } from "./receipts";
 import { ReplayStrip } from "./replay-strip";
 import { NoteEditor } from "./note-editor";
 import { TranscriptPanel } from "./transcript-panel";
+import { SummaryPipePicker } from "./summary-pipe-picker";
+import { useSettings } from "@/lib/hooks/use-settings";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 const AUTOSAVE_DEBOUNCE_MS = 800;
 
@@ -88,6 +97,8 @@ export function NoteView({
   const [copied, setCopied] = useState(false);
   const [meetingCtx, setMeetingCtx] = useState<MeetingContext | null>(null);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const { settings } = useSettings();
 
   const lastSavedRef = useRef({
     title: meeting.title ?? "",
@@ -234,9 +245,33 @@ export function NoteView({
       // meetings where the cached snapshot can be stale).
       const ctx = await fetchMeetingContext(fresh);
       setMeetingCtx(ctx);
+
+      // Use the user-picked summary pipe's body as the directive when one is
+      // set. The chat path knows the meeting id so we prepend that and let
+      // the pipe body skip any "find the meeting that just ended" lookup.
+      // Falls back to the built-in instructions if the pipe can't be loaded.
+      const pipeSlug = settings.meetingSummaryPipeSlug || "meeting-summary";
+      let directiveOverride: string | undefined;
+      try {
+        const res = await localFetch(`/pipes/${pipeSlug}`);
+        if (res.ok) {
+          const json = await res.json();
+          const body: string | undefined = json.data?.body || json.body;
+          if (body && body.trim().length > 0) {
+            directiveOverride = body;
+          }
+        }
+      } catch (err) {
+        console.warn("failed to fetch summary pipe body, falling back", err);
+      }
+
       await showChatWithPrefill({
         context: "",
-        prompt: buildEnrichedSummarizePrompt({ meeting: fresh, context: ctx }),
+        prompt: buildEnrichedSummarizePrompt({
+          meeting: fresh,
+          context: ctx,
+          directiveOverride,
+        }),
         autoSend: true,
         source: "meeting-summarize",
         useHomeChat: true,
@@ -375,20 +410,45 @@ export function NoteView({
                 recording
               </span>
             ) : (
-            <Button
-              variant="default"
-              size="sm"
-              onClick={handleSummarize}
-              disabled={summarizing}
-              className="gap-2"
-            >
-              {summarizing ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Sparkles className="h-3.5 w-3.5" />
-              )}
-              summarize with AI
-            </Button>
+            <div className="inline-flex items-stretch rounded-md border bg-background overflow-hidden">
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleSummarize}
+                disabled={summarizing}
+                className="gap-2 rounded-none border-0 shadow-none"
+              >
+                {summarizing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                summarize with AI
+              </Button>
+              <TooltipProvider delayDuration={300}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setPickerOpen(true)}
+                      className="rounded-none border-l px-2"
+                      aria-label="choose summary pipe"
+                    >
+                      <Settings2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    <p className="text-xs">
+                      pipe:{" "}
+                      <code className="text-[10px]">
+                        {settings.meetingSummaryPipeSlug || "meeting-summary"}
+                      </code>
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
             )}
           </div>
         </div>
@@ -502,6 +562,8 @@ export function NoteView({
           </div>
         </div>
       </footer>
+
+      <SummaryPipePicker open={pickerOpen} onOpenChange={setPickerOpen} />
     </div>
   );
 }

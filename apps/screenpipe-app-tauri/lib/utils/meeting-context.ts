@@ -232,6 +232,10 @@ export function pathFromUrl(url: string): string {
 interface SummarizeInput {
   meeting: MeetingRecord;
   context: MeetingContext;
+  /** Replace the built-in directive with the body of a user-chosen summary
+   * pipe (e.g. one selected from the Meeting summary pipe picker). The
+   * meeting id is prepended so the pipe body doesn't have to look it up. */
+  directiveOverride?: string;
 }
 
 /**
@@ -243,6 +247,7 @@ interface SummarizeInput {
 export function buildEnrichedSummarizePrompt({
   meeting,
   context,
+  directiveOverride,
 }: SummarizeInput): string {
   const start = new Date(meeting.meeting_start);
   const end = meeting.meeting_end ? new Date(meeting.meeting_end) : null;
@@ -308,7 +313,13 @@ export function buildEnrichedSummarizePrompt({
     sections.push(`clipboard activity: ${context.clipboardCount} copy/paste events during meeting`);
   }
 
-  const directive = buildMeetingSummarizeInstructions(meeting.id, { followUpAsk: true });
+  // If the user picked a custom summary pipe, use its prompt body verbatim as
+  // the directive — prepend the meeting id so it skips any "find the meeting
+  // that just ended" lookup the pipe was written for (the chat path knows
+  // the id already).
+  const directive = directiveOverride
+    ? `the meeting you should summarize has id: ${meeting.id}. you can skip any "find which meeting ended" step.\n\n${directiveOverride}`
+    : buildMeetingSummarizeInstructions(meeting.id, { followUpAsk: true });
 
   return `${directive}\n\n${sections.join("\n\n")}`;
 }

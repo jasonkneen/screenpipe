@@ -190,6 +190,11 @@ export type Settings = SettingsStore & {
 	cloudArchiveRetentionDays?: number;
 	/** Sync pipe configurations across devices (requires cloud sync subscription) */
 	pipeSyncEnabled?: boolean;
+	/** Slug of the pipe used to summarize meetings. Drives both the manual
+	 * "Summarize with AI" button (its body becomes the chat prompt) and the
+	 * auto-fire on meeting_ended (the picked pipe owns the trigger). Default:
+	 * "meeting-summary" (the built-in pipe). */
+	meetingSummaryPipeSlug?: string;
 	/** Sync memories (facts, preferences, decisions, insights) across devices.
 	 * Independent of pipeSyncEnabled — a user might want their memories on
 	 * every device but keep pipes device-local, or vice versa. Pro-gated. */
@@ -458,6 +463,7 @@ let DEFAULT_SETTINGS: Settings = {
 			transcriptionMode: "batch",
 			cloudArchiveEnabled: false,
 			cloudArchiveRetentionDays: 7,
+			meetingSummaryPipeSlug: "meeting-summary",
 			filterMusic: false,
 			ignoreIncognitoWindows: true,
 			pauseOnDrmContent: false,
