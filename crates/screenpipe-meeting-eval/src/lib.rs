@@ -378,6 +378,104 @@ pub fn run_scenario(s: &Scenario) -> Metrics {
     metrics
 }
 
+/// One row of a JSONL scan trace — the format a real-world recorder
+/// would emit (one line per scanner tick) and that the `replay-trace`
+/// binary consumes. Same shape as `(t, in_call, has_audio)` but
+/// expressed in seconds-from-trace-start so it serialises straight
+/// out of a log scraper.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct TraceEvent {
+    /// Seconds since the trace start.
+    pub t: f64,
+    pub in_call: bool,
+    #[serde(default)]
+    pub has_audio: bool,
+}
+
+/// Build a Scenario from a list of trace events. `app` ends up in
+/// `ScanResult.app_name` and so determines whether the state machine
+/// treats it as a browser meeting (300s grace) or native (30s).
+/// `true_hangup_t` is optional — when known (e.g. the user marked it),
+/// it enables end_latency and early_end metrics.
+pub fn scenario_from_events(
+    name: &str,
+    app: &str,
+    events: Vec<TraceEvent>,
+    true_hangup_t: Option<f64>,
+) -> Scenario {
+    let ticks: Vec<TickSpec> = events
+        .iter()
+        .map(|e| TickSpec::Single {
+            t: e.t,
+            in_call: e.in_call,
+        })
+        .collect();
+    let audio_ranges = collapse_audio_ranges(&events);
+    Scenario {
+        meta: Meta {
+            name: name.to_string(),
+            description: format!("replay of {} trace events", events.len()),
+            app: app.to_string(),
+            scan_interval_seconds: 5.0,
+        },
+        ticks,
+        audio_ranges,
+        expected: Expected {
+            true_hangup_t_seconds: true_hangup_t,
+            meeting_count: None,
+            final_state: None,
+            flap_count_max: None,
+            end_latency_seconds_max: None,
+            early_end_max: None,
+        },
+        xfail: None,
+    }
+}
+
+/// Compress contiguous `has_audio=true` events into ranges. We need
+/// ranges, not events, because `has_audio_at` checks set membership
+/// at arbitrary timestamps between scans.
+fn collapse_audio_ranges(events: &[TraceEvent]) -> Vec<AudioRange> {
+    let mut ranges = Vec::new();
+    let mut cur: Option<AudioRange> = None;
+    for e in events {
+        if e.has_audio {
+            cur = match cur.take() {
+                Some(r) => Some(AudioRange {
+                    from: r.from,
+                    to: e.t,
+                }),
+                None => Some(AudioRange { from: e.t, to: e.t }),
+            };
+        } else if let Some(r) = cur.take() {
+            ranges.push(r);
+        }
+    }
+    if let Some(r) = cur {
+        ranges.push(r);
+    }
+    ranges
+}
+
+/// Parse a JSONL trace file (one `TraceEvent` per line). Blank lines
+/// and lines starting with `#` are skipped so the file can have
+/// inline comments.
+pub fn load_trace(path: &Path) -> Result<Vec<TraceEvent>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("read trace {}", path.display()))?;
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let e: TraceEvent = serde_json::from_str(trimmed)
+            .with_context(|| format!("parse {}:{}", path.display(), i + 1))?;
+        out.push(e);
+    }
+    Ok(out)
+}
+
 /// Load a scenario from a TOML file. Validates structural invariants
 /// (non-negative durations, well-ordered ranges, sane scan interval)
 /// so malformed scenarios fail loudly at load time, not mid-replay
@@ -649,6 +747,90 @@ mod tests {
             validate_scenario(&bad).is_err(),
             "zero scan interval must be rejected"
         );
+    }
+
+    /// Building a scenario from a JSONL trace produces the same metric
+    /// shape as a TOML scenario — confirms the replay path is wired
+    /// correctly. Uses a minimal in_call → out-of_call → back-to-Idle
+    /// trace.
+    #[test]
+    fn trace_replay_runs_through_state_machine() {
+        let events = vec![
+            TraceEvent {
+                t: 0.0,
+                in_call: false,
+                has_audio: false,
+            },
+            TraceEvent {
+                t: 5.0,
+                in_call: true,
+                has_audio: false,
+            },
+            TraceEvent {
+                t: 10.0,
+                in_call: true,
+                has_audio: false,
+            },
+            TraceEvent {
+                t: 60.0,
+                in_call: false,
+                has_audio: false,
+            },
+            TraceEvent {
+                t: 400.0,
+                in_call: false,
+                has_audio: false,
+            },
+        ];
+        let s = scenario_from_events("trace:smoke", "zoom.us", events, Some(60.0));
+        let m = run_scenario(&s);
+        assert_eq!(m.meeting_starts, 1, "{m:?}");
+        assert_eq!(m.meeting_ends, 1, "{m:?}");
+        assert_eq!(m.final_state, "Idle", "{m:?}");
+    }
+
+    /// `collapse_audio_ranges` produces one range per contiguous run
+    /// of `has_audio=true` events, separated by `false` events.
+    #[test]
+    fn audio_ranges_collapse_correctly() {
+        let events = vec![
+            TraceEvent {
+                t: 0.0,
+                in_call: false,
+                has_audio: false,
+            },
+            TraceEvent {
+                t: 5.0,
+                in_call: true,
+                has_audio: true,
+            },
+            TraceEvent {
+                t: 10.0,
+                in_call: true,
+                has_audio: true,
+            },
+            TraceEvent {
+                t: 15.0,
+                in_call: false,
+                has_audio: false,
+            },
+            TraceEvent {
+                t: 20.0,
+                in_call: true,
+                has_audio: true,
+            },
+            TraceEvent {
+                t: 25.0,
+                in_call: true,
+                has_audio: true,
+            },
+        ];
+        let ranges = collapse_audio_ranges(&events);
+        assert_eq!(ranges.len(), 2, "{:?}", ranges);
+        assert_eq!(ranges[0].from, 5.0);
+        assert_eq!(ranges[0].to, 10.0);
+        assert_eq!(ranges[1].from, 20.0);
+        assert_eq!(ranges[1].to, 25.0);
     }
 
     /// `check()` only reports MISMATCHES — passing expectations don't

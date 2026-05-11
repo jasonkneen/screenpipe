@@ -28,3 +28,7 @@ screenpipe-engine = { path = "../screenpipe-engine" }
 [[bin]]
 name = "screenpipe-eval-meeting-state"
 path = "src/bin/eval_state.rs"
+
+[[bin]]
+name = "screenpipe-eval-meeting-replay-trace"
+path = "src/bin/replay_trace.rs"

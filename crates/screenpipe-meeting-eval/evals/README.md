@@ -149,19 +149,57 @@ Fields:
 | `native_zoom_minimized_with_audio.toml` | Regression for `4e784f620` (#2536): native app minimized, audio keeps it alive. |
 | `arc_meet_toolbar_autohide.toml` | **XFAIL** — Meeting 72/73 (2026-05-11): Arc Meet toolbar auto-hide causes Active⇌Ending flap. Flip off when hysteresis ships. |
 
-## Recording real traces (future)
+## Replaying real traces
 
-The current scenarios are hand-written. To grow coverage from real
-usage without leaking content, add a debug-build trace dumper that
-appends one JSON line per scan to `~/.screenpipe/meeting_traces/`:
+`screenpipe-eval-meeting-replay-trace` consumes a JSONL trace — one
+`{t, in_call, has_audio?}` per line — and feeds it through the same
+state machine the TOML scenarios use:
 
-```json
-{"t":"2026-05-11T17:07:32Z","app":"Arc","profile":"google_meet",
- "in_call":true,"signals_found":1,"matched":["AXButton:leave call"],
- "has_output_audio":true,"state":"Active","meeting_id":73}
+```bash
+cargo run --release -p screenpipe-meeting-eval --bin \
+  screenpipe-eval-meeting-replay-trace -- \
+  crates/screenpipe-meeting-eval/evals/traces/meeting72_arc_real.jsonl \
+  --app Arc --name meeting72 --true-hangup-t 4254
 ```
 
-Only canonical signal types are recorded — never raw AX node names,
-URLs, or window titles. The trace replays through `advance_state`
-to reproduce exactly what the state machine saw. Tracked as a
-follow-up; see `src/lib.rs` crate doc.
+This emits the same JSON metrics shape as the TOML path, so a real
+log replay can be diffed against any hand-written scenario.
+
+### The Meeting 72 trace
+
+`evals/traces/meeting72_arc_real.jsonl` is extracted from
+`~/.screenpipe/screenpipe-app.2026-05-11.log` — the user's 70-minute
+Google Meet call in Arc that triggered the bug investigation.
+Replaying it through today's state machine reproduces:
+
+```json
+{"scenario":"meeting72","meeting_starts":1,"meeting_ends":0,
+ "final_state":"Ending","flap_count":23,"flap_count_controls":23,
+ "end_latency_seconds":null}
+```
+
+23 control-flaps, never naturally ended — confirms the bug shape
+from production data. Once the fix lands and we re-extract a
+post-fix log, this same replay should produce
+`flap_count_controls ≤ 3, final_state="Idle", end_latency≈300s`.
+
+### Uptime caveat
+
+The harness backdates `Instant::now()` to drive `advance_state` on
+simulated time. That means the process needs uptime ≥ scenario
+length. TOML scenarios are capped at ~600s for cold-boot CI safety.
+The Meeting 72 trace is 4254s — fine on a dev box (hours of uptime)
+but it'll panic on a freshly-booted CI runner. Treat the replay
+binary as a dev/investigation tool; CI gates the short TOML
+scenarios only.
+
+## Recording real traces (future)
+
+To grow coverage from real usage without leaking content, add a
+debug-build trace dumper to `run_meeting_detection_loop` that
+appends one JSON line per scan to `~/.screenpipe/meeting_traces/`.
+Only canonical signal types should be recorded — never raw AX node
+names, URLs, or window titles. The user can then share a trace
+file; it replays through `advance_state` to reproduce exactly what
+the state machine saw. Tracked as a follow-up; see `src/lib.rs`
+crate doc.
