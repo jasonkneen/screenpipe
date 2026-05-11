@@ -227,30 +227,73 @@ impl AudioStream {
         let device_name = device.name()?;
 
         Ok(tokio::task::spawn_blocking(move || {
-            let error_callback = create_error_callback(
+            // Primary attempt: the "best" config get_cpal_device_and_config
+            // picked (highest sample rate × most channels from
+            // supported_input_configs). On Windows 11 24H2 WASAPI sometimes
+            // over-reports what the shared-mode engine actually accepts and
+            // initialization returns AUDCLNT_E_UNSUPPORTED_FORMAT (0x88890008,
+            // surfaced as `OS error -2004287480`) — SCREENPIPE-CLI-S2.
+            // Recover by falling back to `default_input_config()` which is
+            // exactly the device's current shared-mode mix format, so it
+            // can't be rejected for shape reasons.
+            let primary_cb = create_error_callback(
                 device_name.clone(),
-                is_running_weak,
-                is_disconnected,
-                stream_control_tx,
+                is_running_weak.clone(),
+                is_disconnected.clone(),
+                stream_control_tx.clone(),
             );
-
-            let stream = build_input_stream(&device, &config, channels, tx, error_callback);
-
-            match stream {
-                Ok(stream) => {
-                    if let Err(e) = stream.play() {
-                        error!("failed to play stream for {}: {}", device_name, e);
-                        return;
-                    }
-
-                    if let Ok(StreamControl::Stop(response)) = stream_control_rx.recv() {
-                        stream.pause().ok();
-                        drop(stream);
-                        response.send(()).ok();
+            let stream = match build_input_stream(&device, &config, channels, tx.clone(), primary_cb) {
+                Ok(s) => Some(s),
+                Err(primary_err) if is_wasapi_unsupported_format(&primary_err) => {
+                    warn!(
+                        "primary input config rejected for {} ({}), retrying with default_input_config",
+                        device_name, primary_err
+                    );
+                    match device.default_input_config() {
+                        Ok(fallback) => {
+                            let fb_channels = fallback.channels();
+                            let fallback_cb = create_error_callback(
+                                device_name.clone(),
+                                is_running_weak,
+                                is_disconnected,
+                                stream_control_tx,
+                            );
+                            match build_input_stream(&device, &fallback, fb_channels, tx, fallback_cb) {
+                                Ok(s) => Some(s),
+                                Err(fallback_err) => {
+                                    error!(
+                                        "default_input_config also rejected for {}: {} (primary: {})",
+                                        device_name, fallback_err, primary_err
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                "could not get default_input_config for {}: {} (primary: {})",
+                                device_name, e, primary_err
+                            );
+                            None
+                        }
                     }
                 }
                 Err(e) => {
                     error!("Failed to build input stream: {}", e);
+                    None
+                }
+            };
+
+            if let Some(stream) = stream {
+                if let Err(e) = stream.play() {
+                    error!("failed to play stream for {}: {}", device_name, e);
+                    return;
+                }
+
+                if let Ok(StreamControl::Stop(response)) = stream_control_rx.recv() {
+                    stream.pause().ok();
+                    drop(stream);
+                    response.send(()).ok();
                 }
             }
         }))
@@ -457,6 +500,21 @@ fn create_error_callback(
             }
         }
     }
+}
+
+/// Detect WASAPI's `AUDCLNT_E_UNSUPPORTED_FORMAT` (HRESULT 0x88890008)
+/// surfaced through cpal as `failed to initialize audio client: OS Error
+/// -2004287480 (FormatMessageW() returned error 317)`. The HRESULT has
+/// no system message string, hence error 317 (`ERROR_MR_MID_NOT_FOUND`)
+/// from `FormatMessageW` — we recognize the numeric form instead. Also
+/// match a few text forms so we keep catching this if cpal's wrapper
+/// changes its formatting.
+#[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
+fn is_wasapi_unsupported_format(err: &anyhow::Error) -> bool {
+    let s = err.to_string();
+    s.contains("-2004287480")
+        || s.contains("0x88890008")
+        || s.to_lowercase().contains("unsupported format")
 }
 
 #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
