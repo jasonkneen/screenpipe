@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Download, ExternalLink, Check, Loader2, Copy, Terminal, Lock, LogIn, LogOut, Send, X, HelpCircle, Search, Calendar as CalendarIcon, Eye, EyeOff, FolderOpen } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { commands } from "@/lib/utils/tauri";
@@ -1818,19 +1819,18 @@ function ApiIntegrationPanel({ integration, onRefresh, onDisconnected }: {
 
 export function ConnectionsSection() {
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    const pending = sessionStorage.getItem("openConnection");
-    if (pending) {
-      sessionStorage.removeItem("openConnection");
-      return pending;
-    }
-    return null;
-  });
+  const [selected, setSelected] = useState<string | null>(null);
   const [integrations, setIntegrations] = useState<IntegrationInfo[]>([]);
   const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
 
   const os = typeof window !== "undefined" ? platform() : "";
+
+  useEffect(() => {
+    const pending = sessionStorage.getItem("openConnection");
+    if (!pending) return;
+    sessionStorage.removeItem("openConnection");
+    setSelected(pending);
+  }, []);
 
   // Hardcoded connection status
   const [claudeInstalled, setClaudeInstalled] = useState(false);
@@ -2054,13 +2054,6 @@ export function ConnectionsSection() {
   };
 
   const selectedTile = allTiles.find(t => t.id === selected);
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (selected && panelRef.current) {
-      panelRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
-  }, [selected]);
 
   return (
     <div className="space-y-5">
@@ -2101,33 +2094,48 @@ export function ConnectionsSection() {
         )}
       </div>
 
-      {/* Expanded panel */}
-      {selected && selectedTile && (() => {
-        const standaloneIds = ["browser-url", "voice-memos", "apple-intelligence", "apple-calendar", "google-calendar", "google-docs", "gmail", "ics-calendar", "openclaw", "hermes"];
-        if (standaloneIds.includes(selected)) {
-          // These components render their own Card
-          return <div ref={panelRef}>{renderPanel()}</div>;
-        }
-        return (
-          <Card ref={panelRef} className="border-border bg-card">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3 mb-4">
+      <Dialog
+        open={!!selected && !!selectedTile}
+        onOpenChange={(open) => {
+          if (!open) setSelected(null);
+        }}
+      >
+        <DialogContent
+          className="max-w-3xl max-h-[85vh] overflow-y-auto p-0 gap-0"
+          overlayClassName="bg-black/50 backdrop-blur-sm"
+          hideCloseButton
+          aria-describedby={undefined}
+        >
+          {selected && selectedTile && (
+            <>
+              <DialogHeader className="flex-row items-center gap-3 space-y-0 border-b border-border p-4 pr-12 text-left">
                 <IntegrationIcon icon={selectedTile.icon} />
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground">{selectedTile.name}</h3>
+                <div className="min-w-0">
+                  <DialogTitle className="text-sm font-semibold font-sans normal-case">
+                    {selectedTile.name}
+                  </DialogTitle>
                   {selectedTile.connected && (
                     <span className="text-xs text-foreground">connected</span>
                   )}
                 </div>
-                <button onClick={() => setSelected(null)} className="ml-auto text-muted-foreground hover:text-foreground">
-                  <X className="h-4 w-4" />
-                </button>
+                <DialogClose asChild>
+                  <button
+                    type="button"
+                    aria-label="close"
+                    className="ml-auto text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                    <span className="sr-only">close</span>
+                  </button>
+                </DialogClose>
+              </DialogHeader>
+              <div className="p-4">
+                {renderPanel()}
               </div>
-              {renderPanel()}
-            </CardContent>
-          </Card>
-        );
-      })()}
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
     </div>
   );
