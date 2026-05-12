@@ -26,11 +26,31 @@ import { localFetch } from "@/lib/api";
 import { listen } from "@tauri-apps/api/event";
 import { PricingToggle } from "./pricing-toggle";
 import { ReferralCard } from "./referral-card";
+import { useHealthCheck } from "@/lib/hooks/use-health-check";
 import posthog from "posthog-js";
 
+/**
+ * Map a thrown fetch error into a user-readable description.
+ *
+ * Reason: WebKit returns `TypeError: Load failed` when a fetch to a
+ * host:port that isn't bound (engine server still warming up after
+ * launch or mid-restart) — that message reaches the user as
+ * "Load failed (localhost:3030)" which is opaque. Replace any
+ * connection-style failure with a clear, actionable line; pass other
+ * errors through verbatim.
+ */
+function syncErrorDescription(e: unknown): string {
+  const msg = (e instanceof Error ? e.message : String(e)) || "";
+  // WebKit ("Load failed"), Chromium ("Failed to fetch"), Firefox ("NetworkError")
+  if (/load failed|failed to fetch|networkerror|network request failed/i.test(msg)) {
+    return "screenpipe server isn't reachable — give it a few seconds after launch and try again";
+  }
+  return msg;
+}
 
 export function AccountSection() {
   const { settings, updateSettings, loadUser } = useSettings();
+  const { isServerDown } = useHealthCheck();
   const [isAnnual, setIsAnnual] = useState(true);
   const [pipeSyncing, setPipeSyncing] = useState(false);
   const [memoriesSyncing, setMemoriesSyncing] = useState(false);
@@ -294,15 +314,24 @@ export function AccountSection() {
                     variant="ghost"
                     size="sm"
                     className="text-xs uppercase tracking-wide"
-                    disabled={pipeSyncing}
+                    title={
+                      isServerDown
+                        ? "screenpipe server is starting up — try again in a moment"
+                        : undefined
+                    }
+                    disabled={pipeSyncing || isServerDown}
                     onClick={async () => {
                       setPipeSyncing(true);
                       try {
                         await localFetch("/sync/pipes/pull", { method: "POST" });
                         await localFetch("/sync/pipes/push", { method: "POST" });
                         toast({ title: "pipes synced" });
-                      } catch (e: any) {
-                        toast({ title: "sync failed", description: e.message, variant: "destructive" });
+                      } catch (e) {
+                        toast({
+                          title: "sync failed",
+                          description: syncErrorDescription(e),
+                          variant: "destructive",
+                        });
                       } finally {
                         setPipeSyncing(false);
                       }
@@ -350,15 +379,24 @@ export function AccountSection() {
                     variant="ghost"
                     size="sm"
                     className="text-xs uppercase tracking-wide"
-                    disabled={memoriesSyncing}
+                    title={
+                      isServerDown
+                        ? "screenpipe server is starting up — try again in a moment"
+                        : undefined
+                    }
+                    disabled={memoriesSyncing || isServerDown}
                     onClick={async () => {
                       setMemoriesSyncing(true);
                       try {
                         await localFetch("/sync/memories/pull", { method: "POST" });
                         await localFetch("/sync/memories/push", { method: "POST" });
                         toast({ title: "memories synced" });
-                      } catch (e: any) {
-                        toast({ title: "sync failed", description: e.message, variant: "destructive" });
+                      } catch (e) {
+                        toast({
+                          title: "sync failed",
+                          description: syncErrorDescription(e),
+                          variant: "destructive",
+                        });
                       } finally {
                         setMemoriesSyncing(false);
                       }
