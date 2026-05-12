@@ -1124,6 +1124,8 @@ export const AIPresetsSelector = ({
           aiPresets: updatedPresets,
         });
 
+        onPresetSaved?.(nextPreset);
+
         toast.success("Preset changed", {
           description: `Switched to ${nextPreset.id} (${nextPreset.model})`,
         });
@@ -1132,7 +1134,7 @@ export const AIPresetsSelector = ({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [aiPresets, selectedPreset, updateSettings, shortcutKey]);
+  }, [aiPresets, selectedPreset, updateSettings, shortcutKey, onPresetSaved]);
 
   const handleSavePreset = (preset: Partial<AIPreset>) => {
     if (!canManageEmployeePresets) {
@@ -1572,6 +1574,8 @@ export const AIPresetsSelector = ({
                           updateSettings({
                             aiPresets: updatedPresets,
                           });
+
+                          onPresetSaved?.(preset);
 
                           toast.success("Preset selected", {
                             description: `${preset.id} is now active`,
