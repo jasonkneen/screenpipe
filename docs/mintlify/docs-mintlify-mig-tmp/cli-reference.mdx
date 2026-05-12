@@ -51,4 +51,42 @@ curl "http://localhost:3030/search?q=meeting&limit=10&content_type=vision"
 | `min_length` | int | minimum text length |
 | `max_length` | int | maximum text length |
 
+## debugging
+
+### enable verbose logging
+
+to troubleshoot issues, enable debug logging by setting the `SCREENPIPE_LOG` environment variable before starting screenpipe:
+
+**macOS/Linux:**
+```bash
+SCREENPIPE_LOG=debug screenpipe
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:SCREENPIPE_LOG = "debug"
+screenpipe
+```
+
+logs will print to the terminal. common log levels:
+- `debug` — detailed diagnostic information
+- `info` — general informational messages (default)
+- `warn` — warnings only (less verbose)
+
+you can also target specific modules for debugging:
+```bash
+SCREENPIPE_LOG=screenpipe=debug,vision=debug screenpipe
+```
+
+### check health endpoint
+
+verify screenpipe is running properly:
+```bash
+curl http://localhost:3030/health
+```
+
+### check pipe logs
+
+for pipe-specific debugging, use the desktop app: **settings → pipes** → click your pipe → view logs.
+
 need help? [join our discord](https://discord.gg/screenpipe).
