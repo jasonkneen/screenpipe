@@ -59,10 +59,29 @@ export async function isCursorMcpInstalled(): Promise<boolean> {
   } catch { return false; }
 }
 
+export async function getCodexConfigPath(): Promise<string> {
+  const home = await homeDir();
+  return join(home, ".codex", "config.toml");
+}
+
+const CODEX_SCREENPIPE_TABLE = /(?:^|\n)\[mcp_servers\.screenpipe\][\s\S]*?(?=\n\[(?!mcp_servers\.screenpipe(?:\.|\]))[^\]]+\]|\s*$)/;
+
+export function hasEnabledCodexMcp(content: string): boolean {
+  const table = content.match(CODEX_SCREENPIPE_TABLE)?.[0] ?? "";
+  return !!table && !/^\s*enabled\s*=\s*false\s*$/m.test(table);
+}
+
+export async function isCodexMcpInstalled(): Promise<boolean> {
+  try {
+    return hasEnabledCodexMcp(await readTextFile(await getCodexConfigPath()));
+  } catch { return false; }
+}
+
 export function useHardcodedTiles(): HardcodedTile[] {
   const os = typeof window !== "undefined" ? platform() : "";
   const [claudeInstalled, setClaudeInstalled] = useState(false);
   const [cursorInstalled, setCursorInstalled] = useState(false);
+  const [codexInstalled, setCodexInstalled] = useState(false);
   const [chatgptConnected, setChatgptConnected] = useState(false);
   const [calendarConnected, setCalendarConnected] = useState(false);
 
@@ -72,6 +91,7 @@ export function useHardcodedTiles(): HardcodedTile[] {
       .catch(() => setClaudeInstalled(localStorage.getItem("screenpipe_claude_connected") === "true"));
 
     isCursorMcpInstalled().then(setCursorInstalled).catch(() => {});
+    isCodexMcpInstalled().then(setCodexInstalled).catch(() => {});
 
     commands.chatgptOauthStatus()
       .then(res => setChatgptConnected(res.status === "ok" && res.data.logged_in))
@@ -86,6 +106,7 @@ export function useHardcodedTiles(): HardcodedTile[] {
   return [
     { id: "claude", name: "Claude Desktop", icon: "claude", connected: claudeInstalled },
     { id: "cursor", name: "Cursor", icon: "cursor", connected: cursorInstalled },
+    { id: "codex", name: "Codex", icon: "codex", connected: codexInstalled },
     { id: "claude-code", name: "Claude Code", icon: "claude-code", connected: false },
     { id: "warp", name: "Warp", icon: "warp", connected: false },
     { id: "chatgpt", name: "ChatGPT", icon: "chatgpt", connected: chatgptConnected },
