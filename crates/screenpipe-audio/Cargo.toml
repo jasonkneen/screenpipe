@@ -18,8 +18,15 @@ serde_json = "1.0"
 oasgen = { workspace = true }
 
 # Cross-platform audio capture
-# Using fork with unified cidre version (compatible with sck-rs)
-cpal = { git = "https://github.com/divanshu-go/screenpipe-cpal.git", rev = "070548661878f0aac2d1c2ba445ef2d6ed18705f" }
+# Pinned to a fork that takes the divanshu-go/screenpipe-cpal@0705486
+# tree (cpal 0.18 + macOS Voice Processing I/O / AEC) and reverts
+# upstream PR #1097's WASAPI AUTOCONVERTPCM flag. AUTOCONVERTPCM on
+# Win11 24H2 makes the Communications-class resampler deliver silent
+# streams to non-Communications consumers — same mic records at -3 dB
+# peak via DirectShow but -85 dB via WASAPI on the same machine. See
+# https://github.com/RustAudio/cpal/issues/1200 for the full bisect.
+# This pin restores pre-#1097 WASAPI behavior while keeping macOS AEC.
+cpal = { git = "https://github.com/screenpipe/cpal.git", rev = "128277304cbc18552fc52fb22895236b8b344df8" }
 
 # Wav encoding
 hound = "3.5"
