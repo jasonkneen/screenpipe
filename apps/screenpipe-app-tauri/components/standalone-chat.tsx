@@ -462,10 +462,186 @@ function parseSearchCommand(cmd: string): SearchInfo | null {
   }
 }
 
+// Reads the JSON payload from a `-d '<json>'` (or --data / --data-raw)
+// argument of a curl command. Single-quoted is the common shape in pi's
+// pipes; double-quoted with backslash-escaped inner quotes is the fallback.
+function curlBodyJson(cmd: string): any | null {
+  let m = cmd.match(/(?:-d|--data(?:-raw|-binary)?)\s+'((?:[^'\\]|\\.)*)'/s);
+  let raw = m ? m[1] : null;
+  if (!raw) {
+    m = cmd.match(/(?:-d|--data(?:-raw|-binary)?)\s+"((?:[^"\\]|\\.)*)"/s);
+    raw = m ? m[1].replace(/\\"/g, '"') : null;
+  }
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch {}
+  try { return JSON.parse(raw.replace(/\\'/g, "'")); } catch {}
+  return null;
+}
+
+function curlMethod(cmd: string): string {
+  const m = cmd.match(/-X\s+([A-Z]+)/);
+  return m ? m[1].toUpperCase() : "GET";
+}
+
+function trunc(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function sqlTables(sql: string): string[] {
+  const out = new Set<string>();
+  const re = /(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sql)) !== null) out.add(m[1].toLowerCase());
+  return Array.from(out);
+}
+
+function sqlVerb(sql: string): string {
+  const s = sql.trim().toUpperCase();
+  if (s.startsWith("SELECT")) {
+    if (/^\s*SELECT\s+COUNT\s*\(/i.test(sql.trim())) return "Counted";
+    return "Queried";
+  }
+  if (s.startsWith("WITH")) return "Queried";
+  if (s.startsWith("INSERT")) return "Inserted into";
+  if (s.startsWith("UPDATE")) return "Updated";
+  if (s.startsWith("DELETE")) return "Deleted from";
+  return "Ran SQL on";
+}
+
+interface CurlPresentation {
+  label: string;
+  appName?: string;
+}
+
+// Maps pi's bash curl calls to the local screenpipe API into a human label.
+// Pi only emits raw curl (no MCP), so the action lives in the URL + body —
+// every endpoint family pi actually uses (sampled from ~/.pi/agent/sessions)
+// gets its own rewrite here. Unknown endpoints fall back to "<METHOD> <path>".
+function classifyCurl(cmd: string): CurlPresentation | null {
+  if (!cmd) return null;
+
+  const search = parseSearchCommand(cmd);
+  if (search) {
+    const target = search.appName || search.windowName || search.contentType || "recordings";
+    const q = search.query ? ` "${trunc(search.query, 40)}"` : "";
+    return { label: `Searched ${target}${q}`, appName: search.appName || search.windowName };
+  }
+
+  const urlMatch = cmd.match(/https?:\/\/[^\s'"`]+/);
+  if (!urlMatch) return null;
+  let url: URL;
+  try { url = new URL(urlMatch[0]); } catch { return null; }
+  if (!url.host.includes("localhost:3030") && !url.host.includes("127.0.0.1:3030")) return null;
+
+  const method = curlMethod(cmd);
+  const path = url.pathname.replace(/\/$/, "") || "/";
+
+  if (path === "/raw_sql") {
+    const body = curlBodyJson(cmd);
+    const sql = body && typeof body.query === "string" ? body.query : null;
+    if (!sql) return { label: "Ran SQL" };
+    const tables = sqlTables(sql);
+    const verb = sqlVerb(sql);
+    if (tables.length === 0) return { label: verb };
+    if (tables.length === 1) return { label: `${verb} ${tables[0]}` };
+    return { label: `${verb} ${tables.slice(0, 2).join(" + ")}${tables.length > 2 ? " +…" : ""}` };
+  }
+
+  if (path === "/activity-summary") return { label: "Activity summary" };
+
+  if (path === "/memories") {
+    if (method === "POST") return { label: "Saved memory" };
+    return { label: "Listed memories" };
+  }
+  const memMatch = path.match(/^\/memories\/(\w+)$/);
+  if (memMatch) {
+    const id = memMatch[1];
+    if (method === "PATCH" || method === "PUT") return { label: `Updated memory #${id}` };
+    if (method === "DELETE") return { label: `Deleted memory #${id}` };
+    return { label: `Got memory #${id}` };
+  }
+
+  if (path === "/meetings") return { label: "Listed meetings" };
+  const meetingMatch = path.match(/^\/meetings\/(\w+)$/);
+  if (meetingMatch) {
+    const id = meetingMatch[1];
+    if (method === "PATCH" || method === "PUT") {
+      const body = curlBodyJson(cmd);
+      const hasTitle = body && typeof body.title === "string" && body.title.length > 0;
+      const hasNote = body && typeof body.note === "string" && body.note.length > 0;
+      if (hasTitle && hasNote) return { label: `Renamed + summarized meeting #${id}` };
+      if (hasNote) return { label: `Summarized meeting #${id}` };
+      if (hasTitle) return { label: `Renamed meeting #${id}` };
+      return { label: `Updated meeting #${id}` };
+    }
+    if (method === "DELETE") return { label: `Deleted meeting #${id}` };
+    return { label: `Got meeting #${id}` };
+  }
+
+  if (path === "/speakers/similar") {
+    const name = url.searchParams.get("name") || url.searchParams.get("speaker_name");
+    return { label: name ? `Found similar speakers for "${trunc(name, 30)}"` : "Found similar speakers" };
+  }
+  if (path === "/speakers/merge") return { label: "Merged speakers" };
+  if (path === "/speakers/search") {
+    const q = url.searchParams.get("name") || url.searchParams.get("q");
+    return { label: q ? `Searched speakers "${trunc(q, 30)}"` : "Searched speakers" };
+  }
+  if (path === "/speakers/unnamed") return { label: "Listed unnamed speakers" };
+  if (path.startsWith("/speakers/")) {
+    const id = path.split("/")[2];
+    if (method === "PATCH" || method === "PUT") return { label: `Renamed speaker #${id}` };
+    return { label: `Got speaker #${id}` };
+  }
+
+  if (path === "/connections/browsers/owned-default/navigate") {
+    const body = curlBodyJson(cmd);
+    if (body && typeof body.url === "string") {
+      try {
+        const u = new URL(body.url);
+        return { label: `Navigated agent browser → ${u.host}` };
+      } catch {}
+    }
+    return { label: "Navigated agent browser" };
+  }
+  if (path === "/connections/browsers/owned-default/eval") return { label: "Ran JS in agent browser" };
+  if (path.startsWith("/connections/browsers/")) return { label: "Agent browser action" };
+
+  if (path === "/connections") return { label: "Listed connections" };
+  if (path.startsWith("/connections/")) {
+    const name = path.split("/")[2];
+    if (method === "DELETE") return { label: `Removed ${name} connection` };
+    if (method === "POST" || method === "PATCH" || method === "PUT") return { label: `Configured ${name} connection` };
+    return { label: `${name} connection` };
+  }
+
+  if (path === "/pipes") {
+    if (method === "POST") return { label: "Installed pipe" };
+    return { label: "Listed pipes" };
+  }
+  const pipeMatch = path.match(/^\/pipes\/([^/]+)(?:\/(.+))?$/);
+  if (pipeMatch) {
+    const name = pipeMatch[1];
+    const sub = pipeMatch[2];
+    if (sub === "executions") return { label: `${name}: recent runs` };
+    if (sub === "run" || method === "POST") return { label: `Ran pipe ${name}` };
+    if (method === "PATCH" || method === "PUT") return { label: `Configured pipe ${name}` };
+    if (method === "DELETE") return { label: `Removed pipe ${name}` };
+    return { label: `Pipe ${name}` };
+  }
+
+  if (path === "/frames/export") return { label: "Exported video" };
+  if (path === "/health") return { label: "Health check" };
+  if (path === "/list-monitors") return { label: "Listed monitors" };
+  if (path === "/list-audio-devices") return { label: "Listed audio devices" };
+  if (path === "/tags") return { label: "Listed tags" };
+
+  return { label: `${method} ${path}` };
+}
+
 function extractAppFromToolCall(toolCall: ToolCall): string | undefined {
   if (toolCall.toolName === "bash") {
-    const search = parseSearchCommand(String(toolCall.args?.command ?? ""));
-    return search?.appName || search?.windowName;
+    return classifyCurl(String(toolCall.args?.command ?? ""))?.appName;
   }
   return undefined;
 }
@@ -476,15 +652,20 @@ function friendlyToolLabel(toolCall: ToolCall): string {
   switch (toolCall.toolName) {
     case "bash": {
       const cmd = String(toolCall.args.command ?? "");
-      const search = parseSearchCommand(cmd);
-      if (search) {
-        const target = search.appName || search.windowName || search.contentType || "recordings";
-        const q = search.query
-          ? ` "${search.query.length > 40 ? search.query.slice(0, 40) + "…" : search.query}"`
-          : "";
-        return `Searched ${target}${q}`;
-      }
-      return `Ran ${cmd ? `\`${cmd.slice(0, 60)}${cmd.length > 60 ? "…" : ""}\`` : "command"}`;
+      const result = classifyCurl(cmd);
+      if (result) return result.label;
+      // Fallback for non-API curls / arbitrary shell — strip the auth-header
+      // boilerplate so the truncation surfaces the meaningful tail, not the
+      // 80-char "-H Authorization: Bearer $SCREENPIPE_API_AUTH_KEY" header.
+      const stripped = cmd
+        .replace(/^\s*curl\s+/, "curl ")
+        .replace(/\s-s\s+/g, " ")
+        .replace(/\s-H\s+['"]Authorization:\s*Bearer\s+\$?SCREENPIPE_API_AUTH_KEY['"]\s*/g, " ")
+        .replace(/\s-H\s+['"]Content-Type:\s*application\/json['"]\s*/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const display = stripped || cmd;
+      return `Ran ${display ? `\`${display.slice(0, 60)}${display.length > 60 ? "…" : ""}\`` : "command"}`;
     }
     case "read":
       return `Read ${fileName(toolCall.args.path || "")}`;
