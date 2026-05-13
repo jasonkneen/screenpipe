@@ -7,8 +7,12 @@ use anyhow::anyhow;
 use anyhow::Result;
 #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
 use cpal::traits::{DeviceTrait, StreamTrait};
+// cpal 0.15.3 (the rev we're pinned to in Cargo.toml — see comment
+// there for why) names its error type `StreamError`. cpal 0.18
+// renamed it to `Error`. We alias to `CpalError` here so call sites
+// don't carry the version-specific name.
 #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
-use cpal::Error as CpalError;
+use cpal::StreamError as CpalError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -57,8 +61,10 @@ impl AudioStreamConfig {
 #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
 impl From<&cpal::SupportedStreamConfig> for AudioStreamConfig {
     fn from(config: &cpal::SupportedStreamConfig) -> Self {
+        // cpal 0.15.3 wraps the sample rate in `SampleRate(pub u32)`;
+        // unwrap to a raw u32 here.
         Self {
-            sample_rate: config.sample_rate(),
+            sample_rate: config.sample_rate().0,
             channels: config.channels(),
         }
     }
@@ -540,7 +546,7 @@ fn build_input_stream(
     match config.sample_format() {
         cpal::SampleFormat::F32 => device
             .build_input_stream(
-                config.config(),
+                &config.config(),
                 move |data: &[f32], _: &_| {
                     let mono = audio_to_mono(data, channels);
                     let _ = tx.send(mono);
@@ -551,7 +557,7 @@ fn build_input_stream(
             .map_err(|e| anyhow!(e)),
         cpal::SampleFormat::I16 => device
             .build_input_stream(
-                config.config(),
+                &config.config(),
                 move |data: &[i16], _: &_| {
                     let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
                     let mono = audio_to_mono(&f32_data, channels);
@@ -563,7 +569,7 @@ fn build_input_stream(
             .map_err(|e| anyhow!(e)),
         cpal::SampleFormat::I32 => device
             .build_input_stream(
-                config.config(),
+                &config.config(),
                 move |data: &[i32], _: &_| {
                     let f32_data: Vec<f32> = data
                         .iter()
@@ -578,7 +584,7 @@ fn build_input_stream(
             .map_err(|e| anyhow!(e)),
         cpal::SampleFormat::I8 => device
             .build_input_stream(
-                config.config(),
+                &config.config(),
                 move |data: &[i8], _: &_| {
                     let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 128.0).collect();
                     let mono = audio_to_mono(&f32_data, channels);
