@@ -4,8 +4,8 @@
 
 //! HTTP API for connection credential management.
 
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Html;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -14,9 +14,12 @@ use screenpipe_connect::connections::ConnectionManager;
 use screenpipe_connect::oauth::{self as oauth_store, PENDING_OAUTH};
 use screenpipe_connect::whatsapp::WhatsAppGateway;
 use screenpipe_secrets::SecretStore;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::routes::browser::BrowserBridge;
@@ -32,6 +35,196 @@ pub struct ConnectionsState {
     pub secret_store: Option<Arc<SecretStore>>,
     pub browser_bridge: Arc<BrowserBridge>,
     pub browser_registry: Arc<BrowserRegistry>,
+    pub browser_pairing: BrowserPairingState,
+    pub api_auth_key: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct BrowserPairingState {
+    pending: Arc<Mutex<HashMap<String, BrowserPairingRequest>>>,
+}
+
+#[derive(Clone)]
+struct BrowserPairingRequest {
+    id: String,
+    code: String,
+    browser: String,
+    extension_id: Option<String>,
+    extension_version: Option<String>,
+    origin: Option<String>,
+    status: BrowserPairingStatus,
+    created_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum BrowserPairingStatus {
+    Pending,
+    Approved,
+    Denied,
+    Expired,
+}
+
+#[derive(Deserialize)]
+struct BrowserPairStartBody {
+    #[serde(default)]
+    browser: Option<String>,
+    #[serde(default)]
+    extension_id: Option<String>,
+    #[serde(default)]
+    extension_version: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BrowserPairStatusQuery {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserPairApproveBody {
+    id: String,
+    approved: bool,
+}
+
+#[derive(Serialize)]
+struct BrowserPairPendingResponse {
+    id: String,
+    code: String,
+    browser: String,
+    extension_id: Option<String>,
+    extension_version: Option<String>,
+    origin: Option<String>,
+    expires_in_secs: u64,
+}
+
+const BROWSER_PAIRING_TTL: Duration = Duration::from_secs(2 * 60);
+
+impl BrowserPairingState {
+    async fn start(
+        &self,
+        body: BrowserPairStartBody,
+        origin: Option<String>,
+    ) -> BrowserPairPendingResponse {
+        self.cleanup_expired().await;
+
+        let browser = body
+            .browser
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "browser".to_string());
+        let extension_id = body.extension_id;
+        let extension_version = body.extension_version;
+        let id = uuid::Uuid::new_v4().to_string();
+        let code = format!("{:06}", fastrand::u32(100_000..1_000_000));
+        let request = BrowserPairingRequest {
+            id: id.clone(),
+            code: code.clone(),
+            browser: browser.clone(),
+            extension_id: extension_id.clone(),
+            extension_version,
+            origin: origin.clone(),
+            status: BrowserPairingStatus::Pending,
+            created_at: Instant::now(),
+        };
+
+        let response = request.pending_response();
+        let mut pending = self.pending.lock().await;
+        pending.retain(|_, existing| {
+            if existing.status != BrowserPairingStatus::Pending {
+                return true;
+            }
+
+            let same_extension = match (&extension_id, &existing.extension_id) {
+                (Some(new), Some(existing)) => new == existing,
+                _ => false,
+            };
+            let same_origin_browser = extension_id.is_none()
+                && existing.extension_id.is_none()
+                && existing.browser == browser
+                && match (&origin, &existing.origin) {
+                    (Some(new), Some(existing)) => new == existing,
+                    _ => false,
+                };
+
+            !(same_extension || same_origin_browser)
+        });
+        pending.insert(id, request);
+        response
+    }
+
+    async fn status(
+        &self,
+        id: &str,
+        api_auth_key: Option<&str>,
+    ) -> (BrowserPairingStatus, Option<String>) {
+        self.cleanup_expired().await;
+
+        let mut pending = self.pending.lock().await;
+        let Some(request) = pending.get_mut(id) else {
+            return (BrowserPairingStatus::Expired, None);
+        };
+
+        if request.created_at.elapsed() > BROWSER_PAIRING_TTL {
+            request.status = BrowserPairingStatus::Expired;
+            return (BrowserPairingStatus::Expired, None);
+        }
+
+        match request.status {
+            BrowserPairingStatus::Approved => (request.status, api_auth_key.map(str::to_string)),
+            status => (status, None),
+        }
+    }
+
+    async fn pending(&self) -> Option<BrowserPairPendingResponse> {
+        self.cleanup_expired().await;
+
+        let pending = self.pending.lock().await;
+        pending
+            .values()
+            .filter(|request| request.status == BrowserPairingStatus::Pending)
+            .min_by_key(|request| request.created_at)
+            .map(BrowserPairingRequest::pending_response)
+    }
+
+    async fn approve(&self, id: &str, approved: bool) -> bool {
+        self.cleanup_expired().await;
+
+        let mut pending = self.pending.lock().await;
+        let Some(request) = pending.get_mut(id) else {
+            return false;
+        };
+
+        if request.status != BrowserPairingStatus::Pending {
+            return false;
+        }
+
+        request.status = if approved {
+            BrowserPairingStatus::Approved
+        } else {
+            BrowserPairingStatus::Denied
+        };
+        true
+    }
+
+    async fn cleanup_expired(&self) {
+        let mut pending = self.pending.lock().await;
+        pending.retain(|_, request| request.created_at.elapsed() <= BROWSER_PAIRING_TTL);
+    }
+}
+
+impl BrowserPairingRequest {
+    fn pending_response(&self) -> BrowserPairPendingResponse {
+        BrowserPairPendingResponse {
+            id: self.id.clone(),
+            code: self.code.clone(),
+            browser: self.browser.clone(),
+            extension_id: self.extension_id.clone(),
+            extension_version: self.extension_version.clone(),
+            origin: self.origin.clone(),
+            expires_in_secs: BROWSER_PAIRING_TTL
+                .saturating_sub(self.created_at.elapsed())
+                .as_secs(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1410,6 +1603,130 @@ async fn connection_config(
 }
 
 // ---------------------------------------------------------------------------
+// Browser extension pairing — lets the extension receive the local API token
+// after an explicit approval in the desktop app, instead of making non-dev
+// users copy/paste secrets from Settings.
+// ---------------------------------------------------------------------------
+
+fn browser_pair_origin(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
+fn browser_pair_origin_allowed(headers: &HeaderMap) -> bool {
+    match browser_pair_origin(headers).as_deref() {
+        // Chrome, Edge, Brave, Arc, etc. use chrome-extension://. Firefox uses
+        // moz-extension://. Some extension fetches omit Origin entirely.
+        None => true,
+        Some(origin) => {
+            origin.starts_with("chrome-extension://")
+                || origin.starts_with("moz-extension://")
+                || origin.starts_with("extension://")
+        }
+    }
+}
+
+fn browser_pair_client_allowed(addr: SocketAddr, headers: &HeaderMap) -> bool {
+    addr.ip().is_loopback() && browser_pair_origin_allowed(headers)
+}
+
+async fn browser_pair_start(
+    State(state): State<ConnectionsState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<BrowserPairStartBody>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    if !browser_pair_client_allowed(addr, &headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "browser pairing is only available to local browser extensions" })),
+        )
+            .into_response();
+    }
+
+    let origin = browser_pair_origin(&headers);
+    let response = state.browser_pairing.start(body, origin.clone()).await;
+    crate::analytics::capture_event_nonblocking(
+        "browser_pairing_requested",
+        json!({
+            "browser": &response.browser,
+            "has_extension_id": response.extension_id.is_some(),
+            "has_origin": origin.is_some(),
+        }),
+    );
+
+    (StatusCode::OK, Json(json!(response))).into_response()
+}
+
+async fn browser_pair_status(
+    State(state): State<ConnectionsState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(query): Query<BrowserPairStatusQuery>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    if !browser_pair_client_allowed(addr, &headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "browser pairing is only available to local browser extensions" })),
+        )
+            .into_response();
+    }
+
+    let (status, token) = state
+        .browser_pairing
+        .status(&query.id, state.api_auth_key.as_deref())
+        .await;
+
+    if status == BrowserPairingStatus::Approved {
+        crate::analytics::capture_event_nonblocking(
+            "browser_pairing_connected",
+            json!({ "auth_required": token.is_some() }),
+        );
+    }
+
+    (StatusCode::OK, Json(json!({ "status": status, "token": token }))).into_response()
+}
+
+async fn browser_pair_pending(State(state): State<ConnectionsState>) -> Json<Value> {
+    Json(json!({
+        "pending": state.browser_pairing.pending().await,
+    }))
+}
+
+async fn browser_pair_approve(
+    State(state): State<ConnectionsState>,
+    Json(body): Json<BrowserPairApproveBody>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let ok = state.browser_pairing.approve(&body.id, body.approved).await;
+    if !ok {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "pairing request not found or already resolved" })),
+        )
+            .into_response();
+    }
+
+    crate::analytics::capture_event_nonblocking(
+        if body.approved {
+            "browser_pairing_approved"
+        } else {
+            "browser_pairing_denied"
+        },
+        json!({}),
+    );
+
+    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Browser extension bridge wrappers — re-extract the bridge from ConnectionsState
 // so the underlying handlers in routes::browser remain state-agnostic.
 // ---------------------------------------------------------------------------
@@ -1795,6 +2112,7 @@ pub fn router<S>(
     secret_store: Option<Arc<SecretStore>>,
     browser_bridge: Arc<BrowserBridge>,
     browser_registry: Arc<BrowserRegistry>,
+    api_auth_key: Option<String>,
 ) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -1805,6 +2123,8 @@ where
         secret_store,
         browser_bridge,
         browser_registry,
+        browser_pairing: BrowserPairingState::default(),
+        api_auth_key,
     };
     Router::new()
         .route("/", get(list_connections))
@@ -1815,6 +2135,12 @@ where
         .route("/browsers/:id/navigate", post(browser_run_navigate))
         .route("/browsers/:id/snapshot", get(browser_run_snapshot))
         .route("/browsers/:id/eval", post(browser_run_eval))
+        // Browser extension pairing — unauthenticated start/status are still
+        // loopback + extension-origin gated; approve/pending use normal API auth.
+        .route("/browser/pair/start", post(browser_pair_start))
+        .route("/browser/pair/status", get(browser_pair_status))
+        .route("/browser/pair/pending", get(browser_pair_pending))
+        .route("/browser/pair/approve", post(browser_pair_approve))
         // Legacy single-instance browser routes — deployed extensions
         // (Chrome v0.2.x and v0.3.0) hardcode these. Keep until usage drops.
         .route("/browser/ws", get(browser_ws))
@@ -1868,7 +2194,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use screenpipe_connect::connections::{ProxyAuth, ProxyConfig};
+    use screenpipe_connect::connections::ProxyAuth;
     use serde_json::json;
 
     // -- resolve_base_url ---------------------------------------------------
@@ -2144,6 +2470,114 @@ mod tests {
         // the default for reading the page.
         let s = format_browser_description("x", "y");
         assert!(s.contains("escape hatch"), "lost escape-hatch framing: {s}");
+    }
+
+    // -- browser pairing ----------------------------------------------------
+
+    #[tokio::test]
+    async fn browser_pairing_approval_returns_token() {
+        let pairing = BrowserPairingState::default();
+        let request = pairing
+            .start(
+                BrowserPairStartBody {
+                    browser: Some("chrome".to_string()),
+                    extension_id: Some("abc".to_string()),
+                    extension_version: Some("1.0.0".to_string()),
+                },
+                Some("chrome-extension://abc".to_string()),
+            )
+            .await;
+
+        let (status, token) = pairing.status(&request.id, Some("sp-test")).await;
+        assert_eq!(status, BrowserPairingStatus::Pending);
+        assert_eq!(token, None);
+
+        assert!(pairing.approve(&request.id, true).await);
+        let (status, token) = pairing.status(&request.id, Some("sp-test")).await;
+        assert_eq!(status, BrowserPairingStatus::Approved);
+        assert_eq!(token.as_deref(), Some("sp-test"));
+        assert!(
+            !pairing.approve(&request.id, true).await,
+            "resolved pairing requests should not be mutable"
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_pairing_denial_never_returns_token() {
+        let pairing = BrowserPairingState::default();
+        let request = pairing
+            .start(
+                BrowserPairStartBody {
+                    browser: Some("edge".to_string()),
+                    extension_id: None,
+                    extension_version: None,
+                },
+                None,
+            )
+            .await;
+
+        assert!(pairing.approve(&request.id, false).await);
+        let (status, token) = pairing.status(&request.id, Some("sp-test")).await;
+        assert_eq!(status, BrowserPairingStatus::Denied);
+        assert_eq!(token, None);
+    }
+
+    #[tokio::test]
+    async fn browser_pairing_unknown_request_reads_as_expired() {
+        let pairing = BrowserPairingState::default();
+        let (status, token) = pairing.status("missing", Some("sp-test")).await;
+        assert_eq!(status, BrowserPairingStatus::Expired);
+        assert_eq!(token, None);
+    }
+
+    #[tokio::test]
+    async fn browser_pairing_replaces_stale_pending_request_for_same_extension() {
+        let pairing = BrowserPairingState::default();
+        let first = pairing
+            .start(
+                BrowserPairStartBody {
+                    browser: Some("chrome".to_string()),
+                    extension_id: Some("abc".to_string()),
+                    extension_version: Some("1.0.0".to_string()),
+                },
+                Some("chrome-extension://abc".to_string()),
+            )
+            .await;
+        let second = pairing
+            .start(
+                BrowserPairStartBody {
+                    browser: Some("chrome".to_string()),
+                    extension_id: Some("abc".to_string()),
+                    extension_version: Some("1.0.0".to_string()),
+                },
+                Some("chrome-extension://abc".to_string()),
+            )
+            .await;
+
+        let (status, token) = pairing.status(&first.id, Some("sp-test")).await;
+        assert_eq!(status, BrowserPairingStatus::Expired);
+        assert_eq!(token, None);
+        assert_eq!(pairing.pending().await.unwrap().id, second.id);
+    }
+
+    #[test]
+    fn browser_pairing_requires_loopback_and_extension_origin() {
+        let loopback = "127.0.0.1:12345".parse().unwrap();
+        let remote = "192.168.1.5:12345".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        headers.insert(
+            axum::http::header::ORIGIN,
+            axum::http::HeaderValue::from_static("chrome-extension://abc"),
+        );
+        assert!(browser_pair_client_allowed(loopback, &headers));
+        assert!(!browser_pair_client_allowed(remote, &headers));
+
+        headers.insert(
+            axum::http::header::ORIGIN,
+            axum::http::HeaderValue::from_static("http://localhost:3000"),
+        );
+        assert!(!browser_pair_client_allowed(loopback, &headers));
     }
 
     // -- BrowserNavigateBody URL validation --------------------------------

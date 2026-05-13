@@ -799,6 +799,7 @@ impl SCServer {
                 self.secret_store.clone(),
                 app_state.browser_bridge.clone(),
                 app_state.browser_registry.clone(),
+                self.api_auth_key.clone(),
             ),
         );
 
@@ -919,6 +920,8 @@ impl SCServer {
                                 || path == "/ws/health"
                                 || path == "/audio/device/status"
                                 || path == "/connections/oauth/callback"
+                                || path == "/connections/browser/pair/start"
+                                || path == "/connections/browser/pair/status"
                                 || path.starts_with("/frames/")
                                 || path == "/notify"
                                 || path.starts_with("/pipes/store")
