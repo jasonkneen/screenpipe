@@ -67,7 +67,7 @@ jobs:
         path: |
           apps/screenpipe-app-tauri/src-tauri/ffmpeg
           apps/screenpipe-app-tauri/src-tauri/vcredist
-          apps/screenpipe-app-tauri/src-tauri/onnxruntime-win-x64-1.19.2
+          apps/screenpipe-app-tauri/src-tauri/onnxruntime-win-x64-1.22.0
           apps/screenpipe-app-tauri/src-tauri/bun-x86_64-pc-windows-msvc.exe
         key: Windows-e2e-artifacts-v2-${{ hashFiles('apps/screenpipe-app-tauri/scripts/pre_build.js') }}
         restore-keys: |
@@ -110,12 +110,12 @@ jobs:
     - name: Download ONNX Runtime (CPU) for Windows
       shell: pwsh
       run: |
-        $url = "https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-win-x64-1.19.2.zip"
-        $tauriDir = "apps/screenpipe-app-tauri/src-tauri/onnxruntime-win-x64-1.19.2"
+        $url = "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip"
+        $tauriDir = "apps/screenpipe-app-tauri/src-tauri/onnxruntime-win-x64-1.22.0"
         $ortDir = "ort-system-lib"
-        Invoke-WebRequest -Uri $url -OutFile "onnxruntime-win-x64-1.19.2.zip"
+        Invoke-WebRequest -Uri $url -OutFile "onnxruntime-win-x64-1.22.0.zip"
         if (Test-Path $tauriDir) { Remove-Item $tauriDir -Recurse -Force }
-        7z x onnxruntime-win-x64-1.19.2.zip -o"apps/screenpipe-app-tauri/src-tauri/" -y
+        7z x onnxruntime-win-x64-1.22.0.zip -o"apps/screenpipe-app-tauri/src-tauri/" -y
         if (Test-Path $ortDir) { Remove-Item $ortDir -Recurse -Force }
         Copy-Item -Path $tauriDir -Destination $ortDir -Recurse -Force
 
