@@ -26,7 +26,7 @@ oasgen = { workspace = true }
 # peak via DirectShow but -85 dB via WASAPI on the same machine. See
 # https://github.com/RustAudio/cpal/issues/1200 for the full bisect.
 # This pin restores pre-#1097 WASAPI behavior while keeping macOS AEC.
-cpal = { git = "https://github.com/screenpipe/cpal.git", rev = "128277304cbc18552fc52fb22895236b8b344df8" }
+cpal = { git = "https://github.com/screenpipe/cpal.git", rev = "f1c7286b75b397aba5b01de62928c083143b3f87" }
 
 # Wav encoding
 hound = "3.5"
