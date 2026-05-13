@@ -63,6 +63,7 @@ import { SummaryCards } from "@/components/chat/summary-cards";
 import { type CustomTemplate } from "@/lib/summary-templates";
 import { usePipes } from "@/lib/hooks/use-pipes";
 import { localFetch, getApiBaseUrl } from "@/lib/api";
+import { getFaviconUrl } from "@/components/rewind/timeline/favicon-utils";
 // Session ID is per-conversation — set on mount (new conv) and updated on load/new.
 // Stored as a ref so event listeners always see the current value without stale closures.
 
@@ -479,7 +480,8 @@ function curlBodyJson(cmd: string): any | null {
 }
 
 function curlMethod(cmd: string): string {
-  const m = cmd.match(/-X\s+([A-Z]+)/);
+  if (/(^|\s)(?:-I|--head)(?=\s|$)/i.test(cmd)) return "HEAD";
+  const m = cmd.match(/(?:-X|--request)\s+([A-Z]+)/i);
   return m ? m[1].toUpperCase() : "GET";
 }
 
@@ -508,10 +510,82 @@ function sqlVerb(sql: string): string {
   return "Ran SQL on";
 }
 
+type WebTargetKind = "fetch" | "navigate" | "eval";
+
+interface WebTargetPresentation {
+  url: string;
+  domain: string;
+  label: string;
+  kind: WebTargetKind;
+}
+
 interface CurlPresentation {
   label: string;
   appName?: string;
   connectionIconName?: string;
+  webTarget?: WebTargetPresentation;
+}
+
+function parseUrlCandidate(raw: string): URL | null {
+  let candidate = raw;
+  for (let i = 0; i < 4; i++) {
+    try {
+      return new URL(candidate);
+    } catch {
+      candidate = candidate.replace(/[),.;\]}]+$/, "");
+    }
+  }
+  return null;
+}
+
+function urlsInCommand(cmd: string): URL[] {
+  return Array.from(cmd.matchAll(/https?:\/\/[^\s'"`<>]+/g))
+    .map((m) => parseUrlCandidate(m[0]))
+    .filter((url): url is URL => Boolean(url));
+}
+
+function isLocalScreenpipeUrl(url: URL): boolean {
+  return (url.hostname === "localhost" || url.hostname === "127.0.0.1") && url.port === "3030";
+}
+
+function domainForUrl(url: URL): string {
+  return url.hostname.replace(/^www\./i, "");
+}
+
+function displayWebUrl(url: URL): string {
+  const domain = domainForUrl(url);
+  const path = `${url.pathname}${url.search}`;
+  return path && path !== "/" ? trunc(`${domain}${path}`, 48) : domain;
+}
+
+function webTargetFromUrl(url: URL, kind: WebTargetKind): WebTargetPresentation | null {
+  if (isLocalScreenpipeUrl(url)) return null;
+  return {
+    url: url.toString(),
+    domain: domainForUrl(url),
+    label: displayWebUrl(url),
+    kind,
+  };
+}
+
+function webTargetFromUrlString(raw: string, kind: WebTargetKind): WebTargetPresentation | null {
+  const url = parseUrlCandidate(raw);
+  return url ? webTargetFromUrl(url, kind) : null;
+}
+
+function firstExternalWebTarget(cmd: string, kind: WebTargetKind): WebTargetPresentation | null {
+  for (const url of urlsInCommand(cmd)) {
+    const target = webTargetFromUrl(url, kind);
+    if (target) return target;
+  }
+  return null;
+}
+
+function externalCurlLabel(method: string, target: WebTargetPresentation): string {
+  if (method === "GET") return `Fetched ${target.domain}`;
+  if (method === "HEAD") return `Checked ${target.domain}`;
+  if (method === "POST") return `Posted to ${target.domain}`;
+  return `${method} ${target.domain}`;
 }
 
 // Maps pi's bash curl calls to the local screenpipe API into a human label.
@@ -528,13 +602,15 @@ function classifyCurl(cmd: string): CurlPresentation | null {
     return { label: `Searched ${target}${q}`, appName: search.appName || search.windowName };
   }
 
-  const urlMatch = cmd.match(/https?:\/\/[^\s'"`]+/);
-  if (!urlMatch) return null;
-  let url: URL;
-  try { url = new URL(urlMatch[0]); } catch { return null; }
-  if (!url.host.includes("localhost:3030") && !url.host.includes("127.0.0.1:3030")) return null;
-
   const method = curlMethod(cmd);
+  const urls = urlsInCommand(cmd);
+  const url = urls.find(isLocalScreenpipeUrl);
+  if (!url) {
+    const target = firstExternalWebTarget(cmd, "fetch");
+    if (!target || !/\bcurl\b/i.test(cmd)) return null;
+    return { label: externalCurlLabel(method, target), webTarget: target };
+  }
+
   const path = url.pathname.replace(/\/$/, "") || "/";
 
   if (path === "/raw_sql") {
@@ -598,14 +674,19 @@ function classifyCurl(cmd: string): CurlPresentation | null {
   if (path === "/connections/browsers/owned-default/navigate") {
     const body = curlBodyJson(cmd);
     if (body && typeof body.url === "string") {
-      try {
-        const u = new URL(body.url);
-        return { label: `Navigated agent browser → ${u.host}` };
-      } catch {}
+      const target = webTargetFromUrlString(body.url, "navigate");
+      if (target) return { label: `Opened ${target.domain} in agent browser`, webTarget: target };
     }
     return { label: "Navigated agent browser" };
   }
-  if (path === "/connections/browsers/owned-default/eval") return { label: "Ran JS in agent browser" };
+  if (path === "/connections/browsers/owned-default/eval") {
+    const body = curlBodyJson(cmd);
+    if (body && typeof body.url === "string") {
+      const target = webTargetFromUrlString(body.url, "eval");
+      if (target) return { label: `Ran JS on ${target.domain}`, webTarget: target };
+    }
+    return { label: "Ran JS in agent browser" };
+  }
   if (path.startsWith("/connections/browsers/")) return { label: "Agent browser action" };
 
   if (path === "/connections") {
@@ -656,6 +737,13 @@ function extractAppFromToolCall(toolCall: ToolCall): string | undefined {
 function extractConnectionIconFromToolCall(toolCall: ToolCall): string | undefined {
   if (toolCall.toolName === "bash") {
     return classifyCurl(String(toolCall.args?.command ?? ""))?.connectionIconName;
+  }
+  return undefined;
+}
+
+function extractWebTargetFromToolCall(toolCall: ToolCall): WebTargetPresentation | undefined {
+  if (toolCall.toolName === "bash") {
+    return classifyCurl(String(toolCall.args?.command ?? ""))?.webTarget;
   }
   return undefined;
 }
@@ -740,6 +828,7 @@ function ToolCallRailItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: bo
   const label = friendlyToolLabel(toolCall);
   const appName = extractAppFromToolCall(toolCall);
   const connectionIconName = extractConnectionIconFromToolCall(toolCall);
+  const webTarget = extractWebTargetFromToolCall(toolCall);
 
   return (
     <div className="relative flex min-w-0">
@@ -781,7 +870,9 @@ function ToolCallRailItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: bo
           onClick={() => setExpanded(!expanded)}
           className="w-full flex items-center gap-1.5 text-left min-w-0 group py-0.5"
         >
-          {appName && !connectionIconName && (
+          {webTarget ? (
+            <WebTargetIcon target={webTarget} sizeClass="w-3.5 h-3.5" letterClass="text-[8px]" />
+          ) : appName && !connectionIconName && (
             <AppIcon name={appName} sizeClass="w-3.5 h-3.5" letterClass="text-[8px]" />
           )}
           <span className="truncate flex-1 text-xs font-mono text-foreground/70 group-hover:text-foreground transition-colors duration-150">
@@ -963,6 +1054,38 @@ function AppIcon({
         <img
           src={iconUrl}
           alt={name}
+          className="w-full h-full object-contain"
+          onError={() => setIconFailed(true)}
+        />
+      )}
+    </div>
+  );
+}
+
+function WebTargetIcon({
+  target,
+  sizeClass = "w-5 h-5",
+  letterClass = "text-[10px]",
+}: { target: WebTargetPresentation; sizeClass?: string; letterClass?: string }) {
+  const color = nameToColor(target.domain);
+  const [iconFailed, setIconFailed] = React.useState(false);
+  return (
+    <div
+      className={cn("rounded-sm flex-shrink-0 flex items-center justify-center overflow-hidden bg-background", sizeClass)}
+      title={target.label}
+    >
+      {iconFailed ? (
+        <span
+          className={cn("w-full h-full flex items-center justify-center font-semibold text-white rounded-sm", letterClass)}
+          style={{ backgroundColor: color }}
+        >
+          {target.domain.charAt(0).toUpperCase()}
+        </span>
+      ) : (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={getFaviconUrl(target.domain)}
+          alt={target.domain}
           className="w-full h-full object-contain"
           onError={() => setIconFailed(true)}
         />
