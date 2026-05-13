@@ -18,8 +18,11 @@ import { commands } from "@/lib/utils/tauri";
 import {
   saveConversationFile,
   deleteConversationFile,
-  loadAllConversations,
+  listConversations,
+  searchConversations,
   migrateFromStoreBin,
+  CHAT_HISTORY_INITIAL_LIMIT,
+  type ConversationMeta,
 } from "@/lib/chat-storage";
 
 
@@ -107,23 +110,68 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     });
   }, []);
   const [historySearch, setHistorySearch] = useState("");
-  const [fileConversations, setFileConversations] = useState<ChatConversation[]>([]);
+  const [fileConversations, setFileConversations] = useState<ConversationMeta[]>([]);
 
   // Run migration from store.bin on mount, then load conversations from files
   const migrationDoneRef = useRef(false);
+  const historyRequestRef = useRef(0);
+  const lastHistoryQueryRef = useRef<string | null>(null);
+  const [historyReady, setHistoryReady] = useState(false);
+  const loadConversationMetas = useCallback(async (query: string) => {
+    const options = {
+      limit: CHAT_HISTORY_INITIAL_LIMIT,
+      includeHidden: false,
+    } as const;
+    const q = query.trim();
+    return q ? searchConversations(q, options) : listConversations(options);
+  }, []);
+
   useEffect(() => {
     if (migrationDoneRef.current) return;
     migrationDoneRef.current = true;
     (async () => {
-      await migrateFromStoreBin();
-      const convs = await loadAllConversations();
-      setFileConversations(convs);
+      try {
+        await migrateFromStoreBin();
+        const convs = await loadConversationMetas("");
+        setFileConversations(convs);
+        lastHistoryQueryRef.current = "";
+      } catch {
+        setFileConversations([]);
+        lastHistoryQueryRef.current = "";
+      } finally {
+        setHistoryReady(true);
+      }
     })();
-  }, []);
+  }, [loadConversationMetas]);
+
+  useEffect(() => {
+    if (!historyReady) return;
+    const q = historySearch.trim();
+    if (lastHistoryQueryRef.current === q) return;
+    const requestId = ++historyRequestRef.current;
+    const timer = setTimeout(() => {
+      loadConversationMetas(q)
+        .then((convs) => {
+          if (historyRequestRef.current === requestId) {
+            setFileConversations(convs);
+            lastHistoryQueryRef.current = q;
+          }
+        })
+        .catch(() => {
+          if (historyRequestRef.current === requestId) {
+            setFileConversations([]);
+          }
+        });
+    }, q ? 200 : 0);
+
+    return () => clearTimeout(timer);
+  }, [historyReady, historySearch, loadConversationMetas]);
 
   const refreshFileConversations = async () => {
-    const convs = await loadAllConversations();
+    const q = historySearch.trim();
+    const convs = await loadConversationMetas(q);
     setFileConversations(convs);
+    lastHistoryQueryRef.current = q;
   };
 
   // ---- saveConversation ----
@@ -437,7 +485,7 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
   //      the pi-event router has been accumulating its background
   //      tokens). Fall back to disk only when the store is cold for
   //      this id.
-  const loadConversation = async (conv: ChatConversation) => {
+  const loadConversation = async (conv: ChatConversation | ConversationMeta) => {
     const { useChatStore } = await import("@/lib/stores/chat-store");
     const store = useChatStore.getState();
     const outgoingSid = piSessionIdRef.current;
@@ -524,7 +572,16 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     } else {
       // Cold session — load from disk and seed the store.
       const { loadConversationFile } = await import("@/lib/chat-storage");
-      const full = (await loadConversationFile(conv.id)) || conv;
+      const loaded = await loadConversationFile(conv.id);
+      const full =
+        loaded ||
+        (Array.isArray((conv as ChatConversation).messages)
+          ? (conv as ChatConversation)
+          : null);
+      if (!full) {
+        await refreshFileConversations();
+        return;
+      }
       messagesForPanel = full.messages.map((m) => ({
         id: m.id,
         role: m.role,
@@ -732,28 +789,20 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
   };
 
   // ---- filteredConversations ----
-  const filteredConversations = useMemo(() => {
-    if (!historySearch.trim()) return fileConversations;
-
-    const search = historySearch.toLowerCase();
-    return fileConversations.filter((c: ChatConversation) =>
-      c.title.toLowerCase().includes(search) ||
-      c.messages.some(m => m.content.toLowerCase().includes(search))
-    );
-  }, [fileConversations, historySearch]);
+  const filteredConversations = fileConversations;
 
   // ---- groupedConversations ----
   const groupedConversations = useMemo(() => {
-    const groups: { label: string; conversations: ChatConversation[] }[] = [];
+    const groups: { label: string; conversations: ConversationMeta[] }[] = [];
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
     const lastWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    const todayConvs: ChatConversation[] = [];
-    const yesterdayConvs: ChatConversation[] = [];
-    const lastWeekConvs: ChatConversation[] = [];
-    const olderConvs: ChatConversation[] = [];
+    const todayConvs: ConversationMeta[] = [];
+    const yesterdayConvs: ConversationMeta[] = [];
+    const lastWeekConvs: ConversationMeta[] = [];
+    const olderConvs: ConversationMeta[] = [];
 
     for (const conv of filteredConversations) {
       const convDate = new Date(conv.updatedAt);

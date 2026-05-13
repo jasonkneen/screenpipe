@@ -5045,7 +5045,7 @@ export function StandaloneChat({
                               {conv.title}
                             </p>
                             <p className="text-[10px] text-muted-foreground">
-                              {conv.messages.length} messages
+                              {conv.messageCount} messages
                             </p>
                           </div>
                           <Popover
