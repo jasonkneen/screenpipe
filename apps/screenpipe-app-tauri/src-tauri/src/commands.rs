@@ -4,7 +4,7 @@
 
 use crate::{
     native_notification, native_shortcut_reminder,
-    store::OnboardingStore,
+    store::{OnboardingStore, SettingsStore},
     updates::is_enterprise_build,
     window::{RewindWindowId, ShowRewindWindow},
 };
@@ -320,22 +320,33 @@ pub async fn get_local_api_config(app_handle: tauri::AppHandle) -> serde_json::V
 /// in memory until restart — the UI should prompt the user to apply & restart.
 #[tauri::command]
 #[specta::specta]
-pub async fn regenerate_api_auth_key() -> Result<String, String> {
+pub async fn regenerate_api_auth_key(app_handle: tauri::AppHandle) -> Result<String, String> {
     let data_dir = screenpipe_core::paths::default_screenpipe_data_dir();
-    screenpipe_engine::auth_key::regenerate_api_auth_key(&data_dir)
+    let key = screenpipe_engine::auth_key::regenerate_api_auth_key(&data_dir)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    persist_api_auth_key_to_settings(&app_handle, &key)?;
+    Ok(key)
 }
 
 /// Persist a user-supplied API auth key to the secret store.
 /// The running server keeps its in-memory key until restart.
 #[tauri::command]
 #[specta::specta]
-pub async fn set_api_auth_key(key: String) -> Result<(), String> {
+pub async fn set_api_auth_key(app_handle: tauri::AppHandle, key: String) -> Result<(), String> {
     let data_dir = screenpipe_core::paths::default_screenpipe_data_dir();
     screenpipe_engine::auth_key::set_api_auth_key(&data_dir, &key)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    persist_api_auth_key_to_settings(&app_handle, &key)
+}
+
+fn persist_api_auth_key_to_settings(app_handle: &tauri::AppHandle, key: &str) -> Result<(), String> {
+    let mut store = SettingsStore::get(app_handle)?.unwrap_or_default();
+    store.recording.api_key = key.to_string();
+    store.save(app_handle)?;
+    crate::store::seed_api_auth_key(key.to_string());
+    Ok(())
 }
 
 /// Read the enterprise license key from `enterprise.json`.

@@ -534,7 +534,7 @@ export function PrivacySection() {
                     Require API Authentication
                   </h3>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    All API requests require a valid token when enabled — including local ones. Copy the key below and paste it into the browser extension settings.
+                    All API requests require a valid token when enabled — including local ones. Most apps pair automatically; use this key only for manual API clients and troubleshooting.
                   </p>
                 </div>
               </div>
@@ -548,7 +548,7 @@ export function PrivacySection() {
             {hasUnsavedChanges && (
               <p className="text-xs text-amber-600 dark:text-amber-400 mt-2 flex items-center gap-1">
                 <RefreshCw className="h-3 w-3 shrink-0" />
-                click &quot;Apply &amp; Restart&quot; above for auth changes to take effect
+                click &quot;Apply &amp; Restart&quot; above for auth changes to take effect; existing browser connections keep using the old key until then
               </p>
             )}
             <LockedSetting settingKey="api_key">
@@ -629,7 +629,7 @@ export function PrivacySection() {
                   onClick={async () => {
                     const { confirm } = await import("@tauri-apps/plugin-dialog");
                     const confirmed = await confirm(
-                      "Regenerate API key? The browser extension and any other clients will need the new key. The new key takes effect after you Apply & Restart.",
+                      "Regenerate API key? Existing browser extensions stay connected until you Apply & Restart, then they must reconnect with the new key.",
                       { title: "screenpipe", kind: "info" },
                     );
                     if (!confirmed) return;
@@ -642,7 +642,7 @@ export function PrivacySection() {
                       setHasUnsavedChanges(true);
                       toast({
                         title: "API key regenerated",
-                        description: "Click Apply & Restart for the new key to take effect.",
+                        description: "Click Apply & Restart. Browser extensions will need to reconnect after restart.",
                       });
                     } catch (e: any) {
                       toast({
