@@ -798,10 +798,13 @@ async fn main() -> anyhow::Result<()> {
     // Create UI recorder config early before cli is moved
     let ui_recorder_config = config.to_ui_recorder_config();
 
-    // Create meeting detector regardless of transcription mode.
     // Meeting detection uses app focus + audio RMS only (no transcription needed).
-    // Shared between audio manager (checks state) and UI recorder (feeds events).
-    let meeting_detector: Option<Arc<MeetingDetector>> = {
+    // It still needs audio capture enabled; otherwise the UI scanner has no useful
+    // consumer and can add idle CPU.
+    let meeting_detector: Option<Arc<MeetingDetector>> = if config.disable_audio {
+        info!("meeting detector disabled because audio capture is disabled");
+        None
+    } else {
         let detector = Arc::new(MeetingDetector::new());
         info!("meeting detector enabled — independent of transcription mode");
         Some(detector)
@@ -1465,17 +1468,19 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Start v2 meeting detection (UI scanning for call controls)
-    // Independent of UI recorder — only needs accessibility permission
-    let _meeting_watcher_handle = {
+    // Start v2 meeting detection (UI scanning for call controls) when audio is enabled.
+    let _meeting_watcher_handle = if let Some(meeting_detector) = meeting_detector.clone() {
         let v2_in_meeting = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        start_meeting_watcher(
+        Some(start_meeting_watcher(
             db.clone(),
             v2_in_meeting,
             manual_meeting.clone(),
             shutdown_tx.subscribe(),
-            meeting_detector.clone(),
-        )
+            Some(meeting_detector),
+        ))
+    } else {
+        info!("meeting watcher skipped because audio capture is disabled");
+        None
     };
 
     // Start calendar-assisted speaker identification

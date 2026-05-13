@@ -219,7 +219,10 @@ impl ServerCore {
             }
         }
 
-        let meeting_detector: Option<Arc<MeetingDetector>> = {
+        let meeting_detector: Option<Arc<MeetingDetector>> = if config.disable_audio {
+            info!("meeting detector disabled because audio capture is disabled");
+            None
+        } else {
             let detector = Arc::new(MeetingDetector::new());
             info!("meeting detector enabled");
             Some(detector)
