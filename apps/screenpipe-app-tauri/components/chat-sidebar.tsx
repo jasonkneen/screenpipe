@@ -32,12 +32,17 @@
  */
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Pin, X, AlertCircle, ChevronDown, ChevronRight, Activity, MessageSquare } from "lucide-react";
+import { Pin, X, AlertCircle, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
 import { useRunningPipes } from "@/lib/hooks/use-running-pipes";
 import { useUpcomingPipes, type UpcomingPipe } from "@/lib/hooks/use-upcoming-pipes";
 import { localFetch } from "@/lib/api";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
+import {
+  PipeActivityIndicator,
+  formatPipeCountdown,
+  formatPipeElapsed,
+} from "@/components/pipe-activity-indicator";
 import {
   useChatStore,
   useChatActions,
@@ -548,8 +553,8 @@ function CollapsibleRecents({
 /** Scheduled (live pipe runs) container — own collapsible scroll
  *  viewport capped at ~25% of available height so even with many
  *  pipes running it never squeezes recents off the screen. Header
- *  shows the count + a tiny live dot so it's obvious at a glance
- *  that something is running in the background. */
+ *  shows the count + activity ring so it's obvious at a glance that
+ *  something is running in the background. */
 function CollapsibleScheduled({
   pipes,
 }: {
@@ -592,17 +597,13 @@ function CollapsibleScheduled({
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 flex-1">
           scheduled
         </span>
-        {/* Live dot + count — subtle "this section is alive". */}
-        <span
-          className="relative h-2 w-2 shrink-0 flex items-center justify-center"
-          aria-hidden
-        >
-          <span className="absolute inset-0 rounded-full bg-foreground/30 animate-[sp-pulse_1.6s_ease-in-out_infinite]" />
-          <span className="relative h-1.5 w-1.5 rounded-full bg-foreground" />
-        </span>
-        <span className="text-[10px] text-muted-foreground/60 tabular-nums">
-          {pipes.length}
-        </span>
+        <PipeActivityIndicator
+          kind="running"
+          label={pipes.length}
+          className="shrink-0"
+          labelClassName="text-muted-foreground/60"
+          ariaLabel={`${pipes.length} running pipe${pipes.length === 1 ? "" : "s"}`}
+        />
       </button>
       {!collapsed && (
         <div
@@ -624,15 +625,6 @@ function CollapsibleScheduled({
   );
 }
 
-function formatElapsed(startedAt?: string): string | null {
-  if (!startedAt) return null;
-  const ms = Date.now() - Date.parse(startedAt);
-  if (Number.isNaN(ms) || ms < 0) return null;
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
-  if (ms < 3600_000) return `${Math.floor(ms / 60_000)}m`;
-  return `${Math.floor(ms / 3600_000)}h`;
-}
-
 function ScheduledRow({
   pipe,
 }: {
@@ -647,7 +639,7 @@ function ScheduledRow({
     const id = setInterval(() => force((n) => n + 1), 60_000);
     return () => clearInterval(id);
   }, [pipe.startedAt]);
-  const elapsed = formatElapsed(pipe.startedAt);
+  const elapsed = formatPipeElapsed(pipe.startedAt);
   // Click → emit watch_pipe so standalone-chat opens the pipe execution
   // and starts streaming its output. The page-level listener flips the
   // active section to home if the user is on Pipes/Memories/etc.
@@ -683,50 +675,23 @@ function ScheduledRow({
       title={`pipe: ${pipe.pipeName}`}
       data-testid={`scheduled-row-${pipe.pipeName}`}
     >
-      {/* Steady live dot — same visual language as chat rows */}
-      <span
-        className="relative h-2 w-2 shrink-0 flex items-center justify-center"
-        aria-label="running"
-      >
-        <span className="absolute inset-0 rounded-full bg-foreground/30 animate-[sp-pulse_1.6s_ease-in-out_infinite]" />
-        <span className="relative h-1.5 w-1.5 rounded-full bg-foreground" />
-      </span>
       <span className="truncate flex-1 text-xs">
         {pipe.title || pipe.pipeName}
       </span>
-      {elapsed && (
-        <span className="text-[10px] text-muted-foreground/60 tabular-nums shrink-0">
-          {elapsed}
-        </span>
-      )}
+      <PipeActivityIndicator
+        kind="running"
+        label={elapsed ?? "now"}
+        className="shrink-0"
+        ariaLabel={`running ${elapsed ?? "now"}`}
+      />
     </div>
   );
-}
-
-/** Format the gap until a future ISO timestamp as a compact "in 2d 4h"
- *  / "in 18h" / "in 12m" / "in 30s" string. Returns null if the time has
- *  already passed (caller should drop the row). */
-function formatCountdown(runAt: string): string | null {
-  const ms = Date.parse(runAt) - Date.now();
-  if (Number.isNaN(ms) || ms <= 0) return null;
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `in ${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `in ${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) {
-    const remM = m - h * 60;
-    return remM > 0 ? `in ${h}h ${remM}m` : `in ${h}h`;
-  }
-  const d = Math.floor(h / 24);
-  const remH = h - d * 24;
-  return remH > 0 ? `in ${d}d ${remH}h` : `in ${d}d`;
 }
 
 /** Sidebar section for one-off pipes (`schedule: at <iso>`) that haven't
  *  fired yet. Mirrors `CollapsibleScheduled` visually but shows a
  *  countdown ("in 2d 4h") instead of an elapsed badge, and uses a steady
- *  (non-pulsing) clock-style dot to differentiate from running pipes. */
+ *  clock icon to differentiate from running pipes. */
 function CollapsibleUpcoming({
   pipes,
   onCancel,
@@ -766,9 +731,13 @@ function CollapsibleUpcoming({
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 flex-1">
           upcoming
         </span>
-        <span className="text-[10px] text-muted-foreground/60 tabular-nums">
-          {pipes.length}
-        </span>
+        <PipeActivityIndicator
+          kind="upcoming"
+          label={pipes.length}
+          className="shrink-0"
+          labelClassName="text-muted-foreground/60"
+          ariaLabel={`${pipes.length} upcoming pipe${pipes.length === 1 ? "" : "s"}`}
+        />
       </button>
       {!collapsed && (
         <div
@@ -801,7 +770,7 @@ function UpcomingRow({
     const id = setInterval(() => force((n) => n + 1), 60_000);
     return () => clearInterval(id);
   }, []);
-  const countdown = formatCountdown(pipe.runAt);
+  const countdown = formatPipeCountdown(pipe.runAt);
   // Auto-hide rows whose run-time has just passed (next poll will drop
   // the pipe from the list once the auto-disable kicks in server-side,
   // but we don't want a visible row showing "in 0s" stuck on screen).
@@ -814,23 +783,18 @@ function UpcomingRow({
       title={`scheduled for ${absLabel} — pipe: ${pipe.pipeName}`}
       data-testid={`upcoming-row-${pipe.pipeName}`}
     >
-      {/* Hollow dot — distinguishes "queued for the future" from
-          "running now" (which uses a filled, pulsing dot). */}
-      <span
-        className="relative h-2 w-2 shrink-0 flex items-center justify-center"
-        aria-label="upcoming"
-      >
-        <span className="relative h-1.5 w-1.5 rounded-full border border-foreground/60" />
-      </span>
       <span className="truncate flex-1 text-xs">
         {pipe.title || pipe.pipeName}
       </span>
       {/* Countdown swaps out for the cancel button on hover — keeps the row
           height stable (no layout shift) and avoids surfacing a destructive
           action until the user clearly intends to interact. */}
-      <span className="text-[10px] text-muted-foreground/60 tabular-nums shrink-0 group-hover:hidden">
-        {countdown}
-      </span>
+      <PipeActivityIndicator
+        kind="upcoming"
+        label={countdown}
+        className="shrink-0 group-hover:hidden"
+        ariaLabel={countdown ? `scheduled ${countdown}` : "scheduled"}
+      />
       <button
         type="button"
         onClick={(e) => {
