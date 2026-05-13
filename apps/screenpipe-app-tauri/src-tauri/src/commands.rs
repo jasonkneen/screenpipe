@@ -338,6 +338,83 @@ pub async fn set_api_auth_key(key: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Add or remove the "Cloud audio + video + image analysis" section in
+/// `~/.claude/skills/screenpipe-api/SKILL.md`.
+///
+/// The skill markdown IS the policy: when this section is present, Pi
+/// (and any Claude Code agent reading the skill) can call the
+/// confidential enclave endpoint; when it's absent, agents don't even
+/// know the capability exists, so privacy-strict users get a clean
+/// world view without conditional logic.
+///
+/// Idempotent — repeated calls with the same value are no-ops. If the
+/// SKILL.md file doesn't exist (Claude Code not installed / skill not
+/// synced yet), the command silently returns Ok(()) — the user's
+/// setting is still persisted on the frontend side and will take
+/// effect once the skill file appears.
+#[tauri::command]
+#[specta::specta]
+pub fn set_cloud_media_analysis_skill(enabled: bool) -> Result<(), String> {
+    const BEGIN: &str = "<!-- BEGIN_CLOUD_MEDIA_ANALYSIS -->";
+    const END: &str = "<!-- END_CLOUD_MEDIA_ANALYSIS -->";
+    const BLOCK: &str = include_str!("assets/cloud_media_analysis_block.md");
+
+    let skill_path = match dirs::home_dir() {
+        Some(home) => home.join(".claude/skills/screenpipe-api/SKILL.md"),
+        None => return Err("no home directory".into()),
+    };
+
+    // If the skill file doesn't exist yet (e.g. Claude Code skill not
+    // installed), persist the user's intent on the frontend but skip the
+    // file write. Next time the skill lands the toggle re-applies.
+    if !skill_path.exists() {
+        debug!(
+            "skill file not present at {}; toggle persisted in settings only",
+            skill_path.display()
+        );
+        return Ok(());
+    }
+
+    let mut content = std::fs::read_to_string(&skill_path)
+        .map_err(|e| format!("read {}: {e}", skill_path.display()))?;
+
+    // Strip any existing block first — idempotent. Match BEGIN..=END
+    // inclusive, plus a trailing newline if present, so we don't leave
+    // double blank lines on toggle-off.
+    if let (Some(begin), Some(end)) = (content.find(BEGIN), content.find(END)) {
+        let end_inclusive = end + END.len();
+        // Eat one trailing newline so toggle-off doesn't leave a hole.
+        let end_eat = if content.as_bytes().get(end_inclusive) == Some(&b'\n') {
+            end_inclusive + 1
+        } else {
+            end_inclusive
+        };
+        content.replace_range(begin..end_eat, "");
+    }
+
+    if enabled {
+        // Append with a guaranteed leading newline; trim any trailing
+        // whitespace on the file first so we don't accumulate blanks
+        // across repeated toggles.
+        while content.ends_with(char::is_whitespace) {
+            content.pop();
+        }
+        content.push('\n');
+        content.push('\n');
+        content.push_str(BLOCK.trim_end());
+        content.push('\n');
+    }
+
+    std::fs::write(&skill_path, content)
+        .map_err(|e| format!("write {}: {e}", skill_path.display()))?;
+    info!(
+        "cloud media analysis skill {} ({})",
+        if enabled { "enabled" } else { "disabled" },
+        skill_path.display()
+    );
+    Ok(())
+}
+
 /// Read the enterprise license key from `enterprise.json`.
 /// Checks in order:
 /// 1. Next to executable (pushed via Intune/MDM to Program Files / .app bundle)

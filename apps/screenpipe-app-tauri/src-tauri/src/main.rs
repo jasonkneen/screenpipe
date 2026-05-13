@@ -727,6 +727,7 @@ async fn main() {
                 recording::get_boot_phase,
                 // Commands from commands.rs
                 commands::is_enterprise_build_cmd,
+                commands::set_cloud_media_analysis_skill,
                 commands::get_enterprise_license_key,
                 commands::save_enterprise_license_key,
                 enterprise_policy::set_enterprise_policy,
@@ -988,6 +989,7 @@ async fn main() {
             commands::get_local_api_config,
             commands::regenerate_api_auth_key,
             commands::set_api_auth_key,
+            commands::set_cloud_media_analysis_skill,
             commands::get_enterprise_license_key,
             enterprise_policy::set_enterprise_policy,
             commands::save_enterprise_license_key,

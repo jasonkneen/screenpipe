@@ -307,6 +307,56 @@ export function PrivacySection() {
     handleSettingsChange({ usePiiRemoval: checked }, true);
   };
 
+  // Cloud media analysis (Gemma 4 E4B inside our Tinfoil enclave) —
+  // toggling this also rewrites the screenpipe-api skill markdown so
+  // agents see the capability iff the toggle is on. Defaults to true.
+  const cloudMediaAnalysisEnabled =
+    settings.cloudMediaAnalysisEnabled ?? true;
+
+  const handleCloudMediaAnalysisChange = useCallback(
+    async (checked: boolean) => {
+      handleSettingsChange({ cloudMediaAnalysisEnabled: checked }, true);
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("set_cloud_media_analysis_skill", { enabled: checked });
+      } catch (e) {
+        console.error("failed to sync cloud media analysis skill:", e);
+        // Don't block on the file mutation — setting still persisted in
+        // the UI store. Worst case Pi sees a stale block until next
+        // toggle or app restart.
+      }
+    },
+    [handleSettingsChange],
+  );
+
+  // On first hydrate sync the skill file with the (default-true) setting.
+  // Cheap idempotent file write; ensures fresh installs land with the
+  // block present, and that flipping settings.json from outside the app
+  // (e.g. importing a config) keeps the skill in sync.
+  useEffect(() => {
+    if (!settings) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        if (!cancelled) {
+          await invoke("set_cloud_media_analysis_skill", {
+            enabled: cloudMediaAnalysisEnabled,
+          });
+        }
+      } catch (e) {
+        console.error("cloud media analysis skill sync on hydrate failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally NOT depending on cloudMediaAnalysisEnabled — we want
+    // this to fire once on mount; subsequent changes flow through
+    // handleCloudMediaAnalysisChange which calls invoke directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // "AI PII removal" — single user-facing toggle that flips both the
   // text reconciliation worker AND the image redactor (rfdetr_v8) on
   // or off together. The technical knobs (destructive vs sibling,
@@ -919,6 +969,34 @@ export function PrivacySection() {
                 </label>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Cloud media analysis — audio / video / image via Gemma 4 E4B
+            inside the same Tinfoil enclave. Toggle adds/removes the
+            section from ~/.claude/skills/screenpipe-api/SKILL.md so
+            agents literally don't see the capability when it's off. */}
+        <Card className="border-border bg-card">
+          <CardContent className="px-3 py-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <Lock className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div>
+                  <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
+                    AI audio &amp; video analysis
+                    <HelpTooltip text="Lets Pi and Claude Code call screenpipe's confidential enclave (Gemma 4 E4B inside a Tinfoil-attested AMD SEV-SNP container, encrypted in flight + at rest, no plaintext at the provider) to transcribe meetings, describe video clips, and analyze image frames from your screenpipe data. When off, the capability is stripped from the agent skill markdown so Pi won't try to use it." />
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Confidential enclave for transcription, video, and image understanding.
+                  </p>
+                </div>
+              </div>
+              <Switch
+                id="cloudMediaAnalysisEnabled"
+                checked={cloudMediaAnalysisEnabled}
+                onCheckedChange={handleCloudMediaAnalysisChange}
+              />
+            </div>
           </CardContent>
         </Card>
       </div>
