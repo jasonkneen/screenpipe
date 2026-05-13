@@ -160,10 +160,11 @@ export interface Env {
 	// Tinfoil — confidential inference in secure enclaves
 	TINFOIL_API_KEY: string;
 	// Screenpipe's own Tinfoil-hosted enclave (privacy-filter + Gemma 4 E4B
-	// audio/vision/chat). Container at pii.screenpipe.containers.tinfoil.dev.
-	// Different scope from TINFOIL_API_KEY — this token is issued by our org's
-	// Tinfoil dashboard for routes the screenpipe enclave shim authenticates.
-	SCREENPIPE_ENCLAVE_API_KEY: string;
+	// audio/vision/chat) at pii.screenpipe.containers.tinfoil.dev.
+	// Optional — Tinfoil tokens are org-scoped, so TINFOIL_API_KEY is the
+	// fallback. Set this separately only if you need to rotate it
+	// independently of the gemma4-31b path.
+	SCREENPIPE_ENCLAVE_API_KEY?: string;
 	// Admin API auth
 	ADMIN_SECRET: string;
 	// Transcription A/B/C test routing

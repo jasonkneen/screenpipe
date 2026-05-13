@@ -256,6 +256,30 @@ async isEnterpriseBuildCmd() : Promise<boolean> {
     return await TAURI_INVOKE("is_enterprise_build_cmd");
 },
 /**
+ * Add or remove the "Cloud audio + video + image analysis" section in
+ * `~/.claude/skills/screenpipe-api/SKILL.md`.
+ * 
+ * The skill markdown IS the policy: when this section is present, Pi
+ * (and any Claude Code agent reading the skill) can call the
+ * confidential enclave endpoint; when it's absent, agents don't even
+ * know the capability exists, so privacy-strict users get a clean
+ * world view without conditional logic.
+ * 
+ * Idempotent — repeated calls with the same value are no-ops. If the
+ * SKILL.md file doesn't exist (Claude Code not installed / skill not
+ * synced yet), the command silently returns Ok(()) — the user's
+ * setting is still persisted on the frontend side and will take
+ * effect once the skill file appears.
+ */
+async setCloudMediaAnalysisSkill(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_cloud_media_analysis_skill", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Read the enterprise license key from `enterprise.json`.
  * Checks in order:
  * 1. Next to executable (pushed via Intune/MDM to Program Files / .app bundle)
@@ -1475,11 +1499,11 @@ audioChunkDuration: number;
  * Empty string or "default" means not configured.
  * Kept as String (not Option) to match existing store.bin schema.
  */
-deepgramApiKey: string;
+deepgramApiKey: string; 
 /**
  * Filter music-dominant audio before transcription using spectral analysis.
  */
-filterMusic: boolean;
+filterMusic: boolean; 
 /**
  * Maximum batch duration in seconds for batch transcription.
  * None = use engine-aware defaults (Deepgram=5000s, OpenAI=3000s, Whisper=600s).
@@ -1548,11 +1572,11 @@ disableClipboardCapture?: boolean;
  * Continue recording audio when the screen is locked.
  * Default: false (audio pauses when screen is locked to save resources).
  */
-recordWhileLocked?: boolean;
+recordWhileLocked?: boolean; 
 /**
  * Languages for transcription (ISO 639-1 codes).
  */
-languages: string[];
+languages: string[]; 
 /**
  * Redact personally identifiable information from transcriptions.
  */
@@ -1659,12 +1683,12 @@ analyticsEnabled: boolean;
 /**
  * Persistent analytics ID (UUID, stable across sessions).
  */
-analyticsId: string;
+analyticsId: string; 
 /**
  * Enable AI workflow event detection (cloud feature, requires subscription).
  * When enabled, classifies desktop activity and triggers event-based pipes.
  */
-enableWorkflowEvents?: boolean;
+enableWorkflowEvents?: boolean; 
 /**
  * Detected hardware tier ("high", "mid", "low").
  * Set once on first launch; `None` for existing installs (treated as High).
@@ -1750,13 +1774,13 @@ showRestartNotifications?: boolean;
 /**
  * When true, apply macOS vibrancy effect to the sidebar for a translucent look.
  */
-translucentSidebar?: boolean;
+translucentSidebar?: boolean; 
 /**
  * When true (default), hide model "thinking" reasoning blocks in the chat
  * transcript. The model still emits them server-side; we just don't
  * render the collapsible block in the UI.
  */
-hideThinkingBlocks?: boolean;
+hideThinkingBlocks?: boolean; 
 /**
  * UI theme: "light", "dark", or "system".
  */
