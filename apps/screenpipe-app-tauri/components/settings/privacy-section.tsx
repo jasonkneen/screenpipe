@@ -556,6 +556,7 @@ export function PrivacySection() {
               onClick={handleUpdate}
               disabled={isUpdating || Object.keys(validationErrors).length > 0}
               size="sm"
+              data-testid="privacy-apply-restart"
               className="flex items-center gap-1.5 h-7 text-xs bg-foreground text-background hover:bg-background hover:text-foreground transition-colors duration-150"
             >
               {isUpdating ? (
@@ -1575,6 +1576,7 @@ export function PrivacySection() {
             onClick={handleUpdate}
             disabled={isUpdating || Object.keys(validationErrors).length > 0}
             size="sm"
+            data-testid="privacy-apply-restart"
             className="pointer-events-auto flex items-center gap-1.5 h-9 px-4 text-sm bg-foreground text-background hover:bg-background hover:text-foreground transition-colors duration-150 shadow-lg"
           >
             {isUpdating ? (

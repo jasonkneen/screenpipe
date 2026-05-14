@@ -1083,6 +1083,7 @@ async fn main() {
             resume_global_shortcuts,
             get_env,
             get_e2e_seed_flags,
+            commands::e2e_main_overlay_visible,
             vault_status,
             vault_unlock,
             // Sync commands

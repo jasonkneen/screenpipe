@@ -790,6 +790,39 @@ pub fn hide_main_window(app_handle: &tauri::AppHandle) {
     }
 }
 
+/// E2E helper: report whether the main overlay is logically visible.
+///
+/// The main window uses platform-specific "hide" semantics (macOS NSPanel with
+/// alpha=0, Windows/Linux hidden WebviewWindow). Tests need a stable signal that
+/// the overlay has been dismissed when opening other surfaces (e.g. search).
+#[tauri::command]
+#[specta::specta]
+pub fn e2e_main_overlay_visible(app_handle: tauri::AppHandle) -> bool {
+    // Avoid exposing internal state in production binaries; E2E builds enable the
+    // `e2e` feature which flips this on.
+    if !cfg!(feature = "e2e") {
+        return false;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app_handle;
+        return crate::window::MAIN_PANEL_SHOWN.load(std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        for label in ["main", "main-window"] {
+            if let Some(w) = app_handle.get_webview_window(label) {
+                if w.is_visible().unwrap_or(false) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 /// Enable click-through mode on the main overlay window (Windows only)
 /// When enabled, mouse events pass through to windows below
 #[tauri::command]

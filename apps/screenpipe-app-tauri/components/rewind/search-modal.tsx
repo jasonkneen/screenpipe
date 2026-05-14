@@ -822,7 +822,10 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
   useEffect(() => {
     if (isOpen) {
       setSelectedIndex(0);
-      setQuery("");
+      const initialQuery = standalone
+        ? new URLSearchParams(window.location.search).get("q") ?? ""
+        : "";
+      setQuery(initialQuery);
       resetSearch();
       setSearchEpoch(e => e + 1);
       clearHighlight();
@@ -841,7 +844,7 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
       setTranscriptionOffset(0);
       setHasMoreTranscriptions(true);
     }
-  }, [isOpen, resetSearch]);
+  }, [isOpen, resetSearch, standalone]);
 
   // Perform search when query changes
   useEffect(() => {
