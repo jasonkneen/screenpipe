@@ -804,6 +804,9 @@ async fn main() -> anyhow::Result<()> {
     let meeting_detector: Option<Arc<MeetingDetector>> = if config.disable_audio {
         info!("meeting detector disabled because audio capture is disabled");
         None
+    } else if config.disable_meeting_detector {
+        info!("meeting detector disabled via --disable-meeting-detector");
+        None
     } else {
         let detector = Arc::new(MeetingDetector::new());
         info!("meeting detector enabled — independent of transcription mode");

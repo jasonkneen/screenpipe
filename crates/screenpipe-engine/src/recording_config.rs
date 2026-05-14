@@ -131,9 +131,9 @@ pub struct RecordingConfig {
     /// Maximum width for stored snapshots (0 = no limit). Default: 1920.
     pub max_snapshot_width: u32,
 
-    /// Skip the background JPEG→MP4 snapshot compaction worker.
-    /// See `RecordingSettings.disable_snapshot_compaction` for details.
-    pub disable_snapshot_compaction: bool,
+    /// Skip the v2 meeting detector watcher.
+    /// See `RecordingSettings.disable_meeting_detector` for details.
+    pub disable_meeting_detector: bool,
 
     /// Require authentication for remote (non-localhost) API access.
     /// When true, requests from other devices must include
@@ -247,7 +247,7 @@ impl RecordingConfig {
             schedule_enabled: settings.schedule_enabled,
             schedule_rules: settings.schedule_rules.clone(),
             max_snapshot_width: settings.max_snapshot_width,
-            disable_snapshot_compaction: settings.disable_snapshot_compaction,
+            disable_meeting_detector: settings.disable_meeting_detector,
             // LAN exposure is opt-in. We force `api_auth` on whenever
             // `listen_on_lan` is true so a user can never accidentally
             // publish an unauthenticated API on their local network. The

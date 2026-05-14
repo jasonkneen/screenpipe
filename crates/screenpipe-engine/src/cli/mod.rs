@@ -460,12 +460,13 @@ pub struct RecordArgs {
     #[arg(long, value_enum, default_value_t = crate::retention::RetentionMode::Media)]
     pub retention_mode: crate::retention::RetentionMode,
 
-    /// Skip the background JPEG→MP4 snapshot compaction worker.
-    /// Use when the MP4 timeline UI is not used (e.g. task-mining tools that consume
-    /// `accessibility_text` / `ui_events` only) — avoids the ffmpeg H.265 encoding load.
-    /// Side effect: JPEGs stay uncompacted, so disk usage depends on `--retention-days`.
+    /// Skip the v2 meeting detector watcher (5s-interval process / AX scan).
+    /// Use when meeting detection is not consumed (task-mining, headless analysis) —
+    /// avoids the constant process enumeration + AX tree walk cost.
+    /// Side effect: meeting-related DB rows are not generated; the audio pipeline's
+    /// in_meeting override flag stays false.
     #[arg(long, default_value_t = false)]
-    pub disable_snapshot_compaction: bool,
+    pub disable_meeting_detector: bool,
 }
 
 impl RecordArgs {
@@ -535,7 +536,7 @@ impl RecordArgs {
                 .collect(),
             deepgram_api_key: self.deepgram_api_key.clone().unwrap_or_default(),
             video_quality: self.video_quality.clone(),
-            disable_snapshot_compaction: self.disable_snapshot_compaction,
+            disable_meeting_detector: self.disable_meeting_detector,
             analytics_enabled: !self.disable_telemetry,
             ignore_incognito_windows: true,
             pause_on_drm_content: self.pause_on_drm_content,
