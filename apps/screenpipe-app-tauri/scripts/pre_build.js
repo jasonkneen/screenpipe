@@ -246,6 +246,22 @@ async function copyFile(src, dest) {
 	await fs.chmod(dest, 0o755); // ensure the binary is executable
 }
 
+async function linkSystemBinary(binaryName, destination) {
+	try {
+		const source = (await $`command -v ${binaryName}`.text()).trim();
+		if (!source) {
+			return false;
+		}
+		await fs.rm(destination, { force: true });
+		await fs.symlink(source, destination);
+		console.log(`using system ${binaryName}: ${source} -> ${destination}`);
+		return true;
+	} catch (error) {
+		console.warn(`could not link system ${binaryName}: ${error.message}`);
+		return false;
+	}
+}
+
 /* ########## Linux ########## */
 if (platform == 'linux') {
 	// In CI, cache-apt-pkgs-action already installs packages; skip redundant apt install
@@ -287,17 +303,34 @@ if (platform == 'linux') {
 
 	// Setup FFMPEG
 	if (!(await fs.exists(config.ffmpegRealname))) {
-		await $`wget --no-config -nc ${config.linux.ffmpegUrl} -O ${config.linux.ffmpegName}.tar.xz`
-		await $`tar xf ${config.linux.ffmpegName}.tar.xz`
-		await $`mv ${config.linux.ffmpegName} ${config.ffmpegRealname}`
-		await $`rm ${config.linux.ffmpegName}.tar.xz`
+		if (inCI) {
+			await fs.mkdir(config.ffmpegRealname, { recursive: true });
+			const linkedFfmpeg = await linkSystemBinary('ffmpeg', path.join(config.ffmpegRealname, 'ffmpeg'));
+			await linkSystemBinary('ffprobe', path.join(config.ffmpegRealname, 'ffprobe'));
+			await linkSystemBinary('qt-faststart', path.join(config.ffmpegRealname, 'qt-faststart'));
+			if (!linkedFfmpeg) {
+				throw new Error('CI expected ffmpeg from apt, but command -v ffmpeg failed');
+			}
+		} else {
+			await $`wget --no-config -nc ${config.linux.ffmpegUrl} -O ${config.linux.ffmpegName}.tar.xz`
+			await $`tar xf ${config.linux.ffmpegName}.tar.xz`
+			await $`mv ${config.linux.ffmpegName} ${config.ffmpegRealname}`
+			await $`rm ${config.linux.ffmpegName}.tar.xz`
+		}
 	} else {
 		console.log('FFMPEG already exists');
 	}
 		// Setup TESSERACT
 	if (!(await fs.exists(config.linux.tesseractName))) {
-		await $`wget --no-config -nc ${config.linux.tesseractUrl} -O ${config.linux.tesseractName}`
-		await $`chmod +x ${config.linux.tesseractName}` // Make the Tesseract binary executable
+		if (inCI) {
+			const linkedTesseract = await linkSystemBinary('tesseract', config.linux.tesseractName);
+			if (!linkedTesseract) {
+				throw new Error('CI expected tesseract from apt, but command -v tesseract failed');
+			}
+		} else {
+			await $`wget --no-config -nc ${config.linux.tesseractUrl} -O ${config.linux.tesseractName}`
+			await $`chmod +x ${config.linux.tesseractName}` // Make the Tesseract binary executable
+		}
 	} else {
 		console.log('TESSERACT already exists');
 	}
