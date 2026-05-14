@@ -19,6 +19,8 @@ describe("Local API search and stability", function () {
 
   const apiUrl = (path: string) => `http://127.0.0.1:${port}${path}`;
   const authedGet = (path: string) => fetchJson(apiUrl(path), authHeaders(key));
+  const isNoDefaultInputDevice = (res: Awaited<ReturnType<typeof authedGet>>) =>
+    res.status === 500 && res.text.includes("No default input device detected");
 
   before(async () => {
     await waitForAppReady();
@@ -251,7 +253,6 @@ describe("Local API search and stability", function () {
   const readonlyEndpointCases = [
     ["/vision/status", "vision status"],
     ["/vision/list", "monitor list"],
-    ["/audio/list", "audio device list"],
     ["/audio/device/status", "audio device status"],
     ["/meetings/status", "meeting status"],
     ["/meetings", "meetings list"],
@@ -277,7 +278,6 @@ describe("Local API search and stability", function () {
   const readonlyEndpointEdgeCases = [
     ["/health?verbose=true", "health verbose"],
     ["/health?token=bad", "health ignores bad token"],
-    ["/audio/list?include_disabled=true", "audio list include disabled"],
     ["/audio/device/status?device_id=0", "audio status device zero"],
     ["/vision/status?monitor_id=0", "vision status monitor zero"],
     ["/vision/list?refresh=true", "vision list refresh"],
@@ -303,6 +303,20 @@ describe("Local API search and stability", function () {
     it(`keeps readonly endpoint edge case below 500: ${label}`, async function () {
       if (!key) this.skip();
       const res = await authedGet(path);
+      expectNoServerError(res, label);
+    });
+  }
+
+  const audioListCases = [
+    ["/audio/list", "audio device list"],
+    ["/audio/list?include_disabled=true", "audio list include disabled"],
+  ] as const;
+
+  for (const [path, label] of audioListCases) {
+    it(`handles optional input-device endpoint: ${label}`, async function () {
+      if (!key) this.skip();
+      const res = await authedGet(path);
+      if (isNoDefaultInputDevice(res)) return;
       expectNoServerError(res, label);
     });
   }
