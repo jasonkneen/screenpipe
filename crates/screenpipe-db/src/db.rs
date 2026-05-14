@@ -66,6 +66,18 @@ pub struct DeleteTimeRangeResult {
     pub snapshot_files: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct NewMeetingTranscriptSegment {
+    pub provider: String,
+    pub model: Option<String>,
+    pub item_id: String,
+    pub device_name: String,
+    pub device_type: String,
+    pub speaker_name: Option<String>,
+    pub transcript: String,
+    pub captured_at: DateTime<Utc>,
+}
+
 /// Outcome of `evict_media_in_range`. DB rows stay alive (search/timeline
 /// keep working); only mp4/wav/jpeg files are reclaimed.
 pub struct EvictMediaResult {
@@ -8119,6 +8131,64 @@ LIMIT ? OFFSET ?
         };
         tx.commit().await?;
         Ok(id)
+    }
+
+    pub async fn delete_meeting_transcript_segments(
+        &self,
+        meeting_id: i64,
+    ) -> Result<u64, SqlxError> {
+        let mut tx = self.begin_immediate_with_retry().await?;
+        let rows = sqlx::query("DELETE FROM meeting_transcript_segments WHERE meeting_id = ?1")
+            .bind(meeting_id)
+            .execute(&mut **tx.conn())
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(rows)
+    }
+
+    pub async fn replace_meeting_transcript_segments(
+        &self,
+        meeting_id: i64,
+        segments: &[NewMeetingTranscriptSegment],
+    ) -> Result<(u64, usize), SqlxError> {
+        let mut tx = self.begin_immediate_with_retry().await?;
+        let deleted = sqlx::query("DELETE FROM meeting_transcript_segments WHERE meeting_id = ?1")
+            .bind(meeting_id)
+            .execute(&mut **tx.conn())
+            .await?
+            .rows_affected();
+
+        let mut inserted = 0usize;
+        for segment in segments {
+            let trimmed = segment.transcript.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let result = sqlx::query(
+                "INSERT INTO meeting_transcript_segments \
+                 (meeting_id, provider, model, item_id, device_name, device_type, speaker_name, transcript, captured_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )
+            .bind(meeting_id)
+            .bind(&segment.provider)
+            .bind(segment.model.as_deref())
+            .bind(&segment.item_id)
+            .bind(&segment.device_name)
+            .bind(&segment.device_type)
+            .bind(segment.speaker_name.as_deref())
+            .bind(trimmed)
+            .bind(segment.captured_at.to_rfc3339())
+            .execute(&mut **tx.conn())
+            .await?;
+
+            if result.rows_affected() > 0 {
+                inserted += 1;
+            }
+        }
+
+        tx.commit().await?;
+        Ok((deleted, inserted))
     }
 
     pub async fn list_meeting_transcript_segments(

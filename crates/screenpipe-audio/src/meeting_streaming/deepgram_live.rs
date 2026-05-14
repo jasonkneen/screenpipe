@@ -210,8 +210,11 @@ fn configure_live_query(url: &mut Url, config: &MeetingStreamingConfig) {
     query.append_pair("interim_results", "true");
     query.append_pair("smart_format", "true");
     query.append_pair("punctuate", "true");
-    query.append_pair("endpointing", "300");
-    query.append_pair("utterance_end_ms", "1000");
+    // A tiny endpointing window makes live notes feel snappy, but it also
+    // strips context from videos and long monologues. 800ms still feels live
+    // while giving Deepgram enough breath to avoid word-salad finals.
+    query.append_pair("endpointing", "800");
+    query.append_pair("utterance_end_ms", "1500");
     query.append_pair("vad_events", "true");
     if let Some(language) = config.language.as_deref().filter(|s| !s.trim().is_empty()) {
         query.append_pair("language", language);

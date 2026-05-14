@@ -252,11 +252,17 @@ function HomeContent() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [toggleSidebar]);
-  const overlayData = useOverlayData();
+  const overlayData = useOverlayData({
+    includeDeviceLevels: false,
+    includeOcrPulse: false,
+    minIntervalMs: 1000,
+    quantize: true,
+  });
 
   // Fetch actual recording devices from health endpoint (same source as tray menu)
   interface RecordingDevice { name: string; kind: "monitor" | "input" | "output"; active: boolean }
   const [recordingDevices, setRecordingDevices] = useState<RecordingDevice[]>([]);
+  const recordingDevicesSnapshotRef = useRef("");
 
   useEffect(() => {
     let cancelled = false;
@@ -300,7 +306,11 @@ function HomeContent() {
               devices.push({ name, kind, active });
             }
           }
-          setRecordingDevices(devices);
+          const snapshot = JSON.stringify(devices);
+          if (snapshot !== recordingDevicesSnapshotRef.current) {
+            recordingDevicesSnapshotRef.current = snapshot;
+            setRecordingDevices(devices);
+          }
         })
         .catch(() => {});
     };
@@ -682,50 +692,58 @@ function HomeContent() {
 
                 return (
                   <div className="flex items-center gap-2 mt-1.5">
-                    {groups.map(({ key, icon: Icon, count, title, opacity, devices: groupDevices }) => (
-                      <Tooltip key={key}>
-                        <TooltipTrigger asChild>
-                          <button
-                            className={cn(
-                              "flex items-center gap-0.5 rounded px-0.5 transition-all",
-                              key === "monitor"
-                                ? "cursor-default"
-                                : cn(
-                                    "cursor-pointer",
-                                    isTranslucent ? "hover:bg-white/10" : "hover:bg-muted"
-                                  )
-                            )}
-                            onClick={key === "monitor" ? undefined : async () => {
-                              const allActive = groupDevices.every((d: RecordingDevice) => d.active);
-                              const endpoint = allActive
-                                ? "/audio/device/stop"
-                                : "/audio/device/start";
-                              for (const d of groupDevices) {
-                                if (allActive || !d.active) {
-                                  const suffix = d.kind === "input" ? "input" : "output";
-                                  await localFetch(endpoint, {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ device_name: `${d.name} (${suffix})` }),
-                                  }).catch(() => {});
+                    {groups.map(({ key, icon: Icon, count, title, opacity, devices: groupDevices }) => {
+                      const allActive = groupDevices.every((d: RecordingDevice) => d.active);
+                      const actionLabel = key === "monitor"
+                        ? title
+                        : `${title} — click to ${allActive ? "mute" : "unmute"}`;
+                      return (
+                        <Tooltip key={key}>
+                          <TooltipTrigger asChild>
+                            <button
+                              aria-label={actionLabel}
+                              className={cn(
+                                "flex items-center gap-0.5 rounded px-0.5 transition-all",
+                                key === "monitor"
+                                  ? "cursor-default"
+                                  : cn(
+                                      "cursor-pointer",
+                                      isTranslucent ? "hover:bg-white/10" : "hover:bg-muted"
+                                    )
+                              )}
+                              onClick={key === "monitor" ? undefined : async () => {
+                                const endpoint = allActive
+                                  ? "/audio/device/stop"
+                                  : "/audio/device/start";
+                                for (const d of groupDevices) {
+                                  if (allActive || !d.active) {
+                                    const suffix = d.kind === "input" ? "input" : "output";
+                                    await localFetch(endpoint, {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ device_name: `${d.name} (${suffix})` }),
+                                    }).catch(() => {});
+                                  }
                                 }
-                              }
-                            }}
-                          >
-                            <Icon
-                              className={cn("h-3 w-3 transition-opacity duration-500", isTranslucent ? "vibrant-sidebar-fg" : "text-foreground")}
-                              style={{ opacity }}
-                            />
-                            {count > 1 && (
-                              <span className={cn("text-[9px] font-medium leading-none", isTranslucent ? "vibrant-sidebar-fg-muted" : "text-foreground/50")}>{count}</span>
-                            )}
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom" className="text-xs">
-                          {key === "monitor" ? title : `${title} — click to ${groupDevices.every((d: RecordingDevice) => d.active) ? "mute" : "unmute"}`}
-                        </TooltipContent>
-                      </Tooltip>
-                    ))}
+                              }}
+                            >
+                              <Icon
+                                aria-hidden="true"
+                                focusable="false"
+                                className={cn("h-3 w-3 transition-colors", isTranslucent ? "vibrant-sidebar-fg" : "text-foreground")}
+                                style={{ opacity }}
+                              />
+                              {count > 1 && (
+                                <span className={cn("text-[9px] font-medium leading-none", isTranslucent ? "vibrant-sidebar-fg-muted" : "text-foreground/50")}>{count}</span>
+                              )}
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="text-xs">
+                            {actionLabel}
+                          </TooltipContent>
+                        </Tooltip>
+                      );
+                    })}
                     <div className="w-px h-3 bg-border mx-0.5" />
                     <NotificationBell />
                     <Tooltip>
@@ -733,15 +751,16 @@ function HomeContent() {
                         <button
                           onClick={() => toggleMeeting()}
                           disabled={meetingLoading}
+                          aria-label={meetingState.active ? "stop meeting" : "start meeting"}
                           className={cn(
                             "relative flex items-center justify-center h-5 w-5 rounded transition-colors",
                             isTranslucent ? "vibrant-nav-item hover:bg-white/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
                           )}
                         >
                           {meetingState.active && (
-                            <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-foreground animate-pulse" />
+                            <span aria-hidden="true" className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-foreground animate-pulse" />
                           )}
-                          <Phone className={cn("h-3 w-3", isTranslucent ? "vibrant-sidebar-fg" : "text-muted-foreground")} />
+                          <Phone aria-hidden="true" focusable="false" className={cn("h-3 w-3", isTranslucent ? "vibrant-sidebar-fg" : "text-muted-foreground")} />
                         </button>
                       </TooltipTrigger>
                       <TooltipContent side="top" className="text-xs">

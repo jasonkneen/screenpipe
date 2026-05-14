@@ -31,12 +31,14 @@ const LIVE_FINAL_PERSIST_RETRY_DELAY: Duration = Duration::from_secs(5);
 const PROVIDER_STREAM_RESTART_BACKOFF: Duration = Duration::from_secs(30);
 const LIVE_INACTIVITY_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const LIVE_NO_AUDIO_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const LIVE_MAX_SESSION_DURATION: Duration = Duration::from_secs(2 * 60 * 60);
 
 #[derive(Debug)]
 struct ActiveMeetingStream {
     meeting_id: i64,
     provider: String,
     live_transcription_enabled: bool,
+    started_at: Instant,
     audio_frames_seen: u64,
     audio_samples_seen: u64,
     last_audio_activity_at: Instant,
@@ -107,6 +109,7 @@ pub fn start_meeting_streaming_loop(
                         meeting_id,
                         provider: provider.clone(),
                         live_transcription_enabled,
+                        started_at: Instant::now(),
                         audio_frames_seen: 0,
                         audio_samples_seen: 0,
                         last_audio_activity_at: Instant::now(),
@@ -211,9 +214,9 @@ pub fn start_meeting_streaming_loop(
                     }
                 }
                 _ = inactivity_tick.tick() => {
-                    if active
+                    if let Some(reason) = active
                         .as_ref()
-                        .is_some_and(|session| should_request_auto_end_for_inactivity(session, Instant::now()))
+                        .and_then(|session| auto_end_reason(session, Instant::now()))
                     {
                         let Some(session) = active.take() else {
                             continue;
@@ -221,15 +224,15 @@ pub fn start_meeting_streaming_loop(
                         let provider = session.provider.clone();
                         let meeting_id = session.meeting_id;
                         warn!(
-                            "meeting streaming: requesting meeting auto-end after {}s without live audio activity (meeting_id={})",
-                            LIVE_NO_AUDIO_ACTIVITY_TIMEOUT.as_secs(),
-                            meeting_id
+                            "meeting streaming: requesting meeting auto-end ({}, meeting_id={})",
+                            reason.log_message(),
+                            meeting_id,
                         );
                         let _ = screenpipe_events::send_event(
                             "meeting_auto_end_requested",
                             serde_json::json!({
                                 "meeting_id": meeting_id,
-                                "reason": "live audio inactive",
+                                "reason": reason.event_reason(),
                             }),
                         );
                         emit_session_ended(session);
@@ -240,7 +243,7 @@ pub fn start_meeting_streaming_loop(
                             Some(meeting_id),
                             &provider,
                             false,
-                            Some("meeting auto-ended after live audio became inactive".to_string()),
+                            Some(reason.status_message().to_string()),
                         );
                     }
                 }
@@ -460,6 +463,50 @@ fn should_request_auto_end_for_inactivity(session: &ActiveMeetingStream, now: In
         && now.duration_since(session.last_audio_activity_at) >= LIVE_NO_AUDIO_ACTIVITY_TIMEOUT
 }
 
+fn should_request_auto_end_for_max_duration(session: &ActiveMeetingStream, now: Instant) -> bool {
+    session.live_transcription_enabled
+        && now.duration_since(session.started_at) >= LIVE_MAX_SESSION_DURATION
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AutoEndReason {
+    Inactive,
+    MaxDuration,
+}
+
+impl AutoEndReason {
+    fn event_reason(self) -> &'static str {
+        match self {
+            Self::Inactive => "live audio inactive",
+            Self::MaxDuration => "live meeting maximum duration reached",
+        }
+    }
+
+    fn log_message(self) -> &'static str {
+        match self {
+            Self::Inactive => "15m without live audio activity",
+            Self::MaxDuration => "2h maximum live duration reached",
+        }
+    }
+
+    fn status_message(self) -> &'static str {
+        match self {
+            Self::Inactive => "meeting auto-ended after live audio became inactive",
+            Self::MaxDuration => "meeting auto-ended after the 2 hour live limit",
+        }
+    }
+}
+
+fn auto_end_reason(session: &ActiveMeetingStream, now: Instant) -> Option<AutoEndReason> {
+    if should_request_auto_end_for_max_duration(session, now) {
+        return Some(AutoEndReason::MaxDuration);
+    }
+    if should_request_auto_end_for_inactivity(session, now) {
+        return Some(AutoEndReason::Inactive);
+    }
+    None
+}
+
 async fn readiness_error(
     config: &MeetingStreamingConfig,
     transcription_engine: &Arc<RwLock<Option<TranscriptionEngine>>>,
@@ -519,6 +566,7 @@ mod tests {
             meeting_id: 42,
             provider: "selected-engine".to_string(),
             live_transcription_enabled: live,
+            started_at: now,
             audio_frames_seen: 0,
             audio_samples_seen: 0,
             last_audio_activity_at: now,
@@ -535,6 +583,18 @@ mod tests {
             now - LIVE_NO_AUDIO_ACTIVITY_TIMEOUT - Duration::from_secs(1);
 
         assert!(should_request_auto_end_for_inactivity(&session, now));
+    }
+
+    #[test]
+    fn live_session_requests_auto_end_after_max_duration() {
+        let now = Instant::now();
+        let mut session = test_session(now, true);
+        session.started_at = now - LIVE_MAX_SESSION_DURATION - Duration::from_secs(1);
+
+        assert_eq!(
+            auto_end_reason(&session, now),
+            Some(AutoEndReason::MaxDuration)
+        );
     }
 
     #[test]

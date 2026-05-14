@@ -589,6 +589,7 @@ fn get_native_calendar_events(hours_back: i64, hours_ahead: i64) -> Result<Vec<V
                 "end_display": e.end_local.format("%H:%M").to_string(),
                 "attendees": e.attendees,
                 "location": e.location,
+                "meeting_url": e.meeting_url,
                 "calendar_name": e.calendar_name,
                 "is_all_day": e.is_all_day,
             })
@@ -613,6 +614,7 @@ fn get_native_calendar_events(hours_back: i64, hours_ahead: i64) -> Result<Vec<V
                 "end_display": e.end_local.format("%H:%M").to_string(),
                 "attendees": e.attendees,
                 "location": e.location,
+                "meeting_url": e.meeting_url,
                 "calendar_name": e.calendar_name,
                 "is_all_day": e.is_all_day,
             })
@@ -1040,6 +1042,7 @@ async fn gcal_events_inner(
             ("singleEvents", "true"),
             ("orderBy", "startTime"),
             ("maxResults", "50"),
+            ("conferenceDataVersion", "1"),
         ])
         .send()
         .await?
@@ -1071,6 +1074,7 @@ async fn gcal_events_inner(
                         .collect()
                 })
                 .unwrap_or_default();
+            let meeting_url = google_calendar_meeting_url(&item);
 
             json!({
                 "id": item["id"].as_str().unwrap_or(""),
@@ -1079,6 +1083,7 @@ async fn gcal_events_inner(
                 "end": end,
                 "attendees": attendees,
                 "location": item["location"].as_str(),
+                "meetingUrl": meeting_url,
                 "calendarName": "primary",
                 "isAllDay": is_all_day,
             })
@@ -1086,6 +1091,60 @@ async fn gcal_events_inner(
         .collect();
 
     Ok(events)
+}
+
+fn google_calendar_meeting_url(item: &Value) -> Option<String> {
+    item["hangoutLink"]
+        .as_str()
+        .and_then(|s| normalize_meeting_url(Some(s.to_string())))
+        .or_else(|| {
+            item["conferenceData"]["entryPoints"]
+                .as_array()
+                .and_then(|entry_points| {
+                    entry_points
+                        .iter()
+                        .find(|entry| entry["entryPointType"].as_str() == Some("video"))
+                        .or_else(|| entry_points.first())
+                        .and_then(|entry| entry["uri"].as_str())
+                        .and_then(|uri| normalize_meeting_url(Some(uri.to_string())))
+                })
+        })
+        .or_else(|| extract_meeting_url(item["location"].as_str()))
+        .or_else(|| extract_meeting_url(item["description"].as_str()))
+}
+
+fn normalize_meeting_url(raw: Option<String>) -> Option<String> {
+    let trimmed = raw?
+        .trim()
+        .trim_matches(|c| matches!(c, '<' | '>' | '"' | '\''))
+        .trim_end_matches(|c| matches!(c, ')' | ']' | ',' | '.' | ';'))
+        .to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    let is_known_meeting = lower.contains("meet.google.com/")
+        || lower.contains("zoom.us/")
+        || lower.contains("teams.microsoft.com/")
+        || lower.contains("teams.live.com/")
+        || lower.contains("webex.com/");
+
+    if !is_known_meeting {
+        return None;
+    }
+
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        Some(trimmed)
+    } else {
+        Some(format!("https://{}", trimmed.trim_start_matches('/')))
+    }
+}
+
+fn extract_meeting_url(text: Option<&str>) -> Option<String> {
+    let text = text?;
+    text.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\''))
+        .find_map(|token| normalize_meeting_url(Some(token.to_string())))
 }
 
 /// DELETE /connections/google-calendar/disconnect — remove stored tokens.
@@ -2244,6 +2303,23 @@ mod tests {
     use super::*;
     use screenpipe_connect::connections::ProxyAuth;
     use serde_json::json;
+
+    #[test]
+    fn google_calendar_meeting_url_prefers_conference_video() {
+        let item = json!({
+            "location": "Board room",
+            "conferenceData": {
+                "entryPoints": [
+                    { "entryPointType": "phone", "uri": "tel:+15551234567" },
+                    { "entryPointType": "video", "uri": "meet.google.com/abc-defg-hij" }
+                ]
+            }
+        });
+        assert_eq!(
+            google_calendar_meeting_url(&item).as_deref(),
+            Some("https://meet.google.com/abc-defg-hij")
+        );
+    }
 
     // -- resolve_base_url ---------------------------------------------------
 

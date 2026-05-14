@@ -27,6 +27,8 @@ interface TranscriptPanelProps {
   onClose: () => void;
   /** Refetch when the meeting is live so new chunks appear. */
   isLive: boolean;
+  /** Incremented by the parent after a meeting-level retranscribe finishes. */
+  refreshKey?: number;
 }
 
 interface LiveTranscriptDelta {
@@ -193,6 +195,7 @@ export function TranscriptPanel({
   isOpen,
   onClose,
   isLive,
+  refreshKey = 0,
 }: TranscriptPanelProps) {
   const [chunks, setChunks] = useState<MeetingAudioChunk[]>([]);
   const [loading, setLoading] = useState(false);
@@ -233,7 +236,7 @@ export function TranscriptPanel({
     );
     setChunks(rows);
     setLoaded(true);
-  }, [meeting.id, range.start, range.end]);
+  }, [meeting.id, range.start, range.end, refreshKey]);
 
   useEffect(() => {
     setLiveBlocks([]);
@@ -388,7 +391,7 @@ export function TranscriptPanel({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, meeting.id, range.start, range.end, isLive]);
+  }, [isOpen, meeting.id, range.start, range.end, isLive, refreshKey]);
 
   const blocks = useMemo(() => groupBySpeaker(chunks), [chunks]);
   const visibleLiveBlocks = useMemo(() => {

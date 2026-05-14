@@ -258,13 +258,13 @@ async isEnterpriseBuildCmd() : Promise<boolean> {
 /**
  * Toggle the "Cloud audio + video + image analysis" capability
  * in the screenpipe-api skill that Pi installs on every run.
- * 
+ *
  * Mechanism: the screenpipe-core `Pi::ensure_screenpipe_skill` reads
  * `~/.screenpipe/cloud_media_analysis.disabled` at install time and
  * conditionally appends the Gemma 4 E4B confidential-enclave section
  * to `<project>/.pi/skills/screenpipe-api/SKILL.md`. Default (no
  * marker) = enabled. This command just creates or removes the marker.
- * 
+ *
  * Why a marker file instead of editing the rendered skill: Pi rewrites
  * the rendered skill from a compiled-in template on every run, so any
  * post-install edits get overwritten on the next pipe execution. The
@@ -1327,28 +1327,36 @@ export type BrowserAutomationStatus = { name: string; status: string; running: b
 export type BrowserLogEntry = { level: string; message: string }
 export type CacheFile = { path: string; label: string; size_bytes: bigint }
 export type CachedSuggestions = { suggestions: Suggestion[]; generatedAt: string; mode: string; aiGenerated: boolean; tags: string[] }
-export type CalendarEventItem = { id: string; title: string; 
-/**
- * RFC3339 in UTC — for meeting detection / comparisons.
- */
-start: string; 
-/**
- * RFC3339 in UTC — for meeting detection / comparisons.
- */
-end: string; 
-/**
- * Pre-formatted local time, e.g. "3:30 PM" — for display.
- */
-startDisplay: string; 
-/**
- * Pre-formatted local time, e.g. "5:00 PM" — for display.
- */
-endDisplay: string; attendees: string[]; location: string | null; calendarName: string; isAllDay: boolean; 
-/**
- * Source identifier: "native" for OS calendar, "ics" for ICS feeds.
- * Used by meeting detector to merge events from multiple publishers.
- */
-source?: string }
+export type CalendarEventItem = {
+  id: string;
+  title: string;
+  /**
+   * RFC3339 in UTC — for meeting detection / comparisons.
+   */
+  start: string;
+  /**
+   * RFC3339 in UTC — for meeting detection / comparisons.
+   */
+  end: string;
+  /**
+   * Pre-formatted local time, e.g. "3:30 PM" — for display.
+   */
+  startDisplay: string;
+  /**
+   * Pre-formatted local time, e.g. "5:00 PM" — for display.
+   */
+  endDisplay: string;
+  attendees: string[];
+  location: string | null;
+  meetingUrl: string | null;
+  calendarName: string;
+  isAllDay: boolean;
+  /**
+   * Source identifier: "native" for OS calendar, "ics" for ICS feeds.
+   * Used by meeting detector to merge events from multiple publishers.
+   */
+  source?: string;
+}
 export type CalendarStatus = { available: boolean; authorized: boolean; authorizationStatus: string; calendarCount: number }
 export type ChatGptOAuthStatus = { logged_in: boolean }
 export type Credits = { amount: number }
@@ -1473,12 +1481,12 @@ transcriptionMode: string;
  * from 24/7 background transcription: the recorder still writes durable
  * chunks, while this powers the low-latency meeting note UI.
  */
-meetingLiveTranscriptionEnabled: boolean; 
+meetingLiveTranscriptionEnabled: boolean;
 /**
  * Provider for meeting-only live notes. Defaults to the selected audio
  * transcription engine so local/custom engines work without Cloud.
  */
-meetingLiveTranscriptionProvider: string; 
+meetingLiveTranscriptionProvider: string;
 /**
  * Audio device names/IDs to capture from.
  */

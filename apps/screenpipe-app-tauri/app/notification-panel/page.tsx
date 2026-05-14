@@ -19,10 +19,12 @@ interface NotificationAction {
   primary?: boolean;
   // Pipe notification action fields
   id?: string;
-  type?: "pipe" | "api" | "deeplink" | "dismiss";
+  type?: "pipe" | "api" | "deeplink" | "meeting_join" | "dismiss";
   pipe?: string;
   context?: Record<string, unknown>;
   url?: string;
+  deeplink_url?: string;
+  deeplinkUrl?: string;
   method?: string;
   body?: Record<string, unknown>;
   toast?: string;
@@ -203,6 +205,28 @@ export default function NotificationPanelPage() {
                     );
                   }
                 }
+              }
+              break;
+            }
+            case "meeting_join": {
+              if (actionObj.url) {
+                try {
+                  const { open } = await import("@tauri-apps/plugin-shell");
+                  await open(actionObj.url);
+                } catch (e) {
+                  console.error(
+                    "notification open: shell plugin unavailable",
+                    e
+                  );
+                }
+              }
+              const deeplink = actionObj.deeplink_url || actionObj.deeplinkUrl;
+              if (typeof deeplink === "string" && deeplink.startsWith("screenpipe://")) {
+                await invoke("show_window_activated", {
+                  window: windowForDeeplink(deeplink),
+                });
+                await new Promise((r) => setTimeout(r, 150));
+                await emit("deep-link-received", deeplink);
               }
               break;
             }

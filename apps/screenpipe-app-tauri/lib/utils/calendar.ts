@@ -14,9 +14,23 @@ export interface CalendarEvent {
   end: string;
   attendees?: string[];
   location?: string;
+  meeting_url?: string;
   calendar_name?: string;
   is_all_day?: boolean;
   source?: CalendarSource;
+}
+
+export type CalendarMeetingProvider =
+  | "google-meet"
+  | "zoom"
+  | "teams"
+  | "meeting";
+
+export interface CalendarMeetingLink {
+  url: string;
+  host: string;
+  provider: CalendarMeetingProvider;
+  label: string;
 }
 
 // Native macOS Calendar wraps in {data: [...]}; Google Calendar returns the
@@ -30,6 +44,8 @@ interface RawNativeEvent {
   end?: string;
   attendees?: string[];
   location?: string;
+  meeting_url?: string | null;
+  meetingUrl?: string | null;
   calendar_name?: string;
   is_all_day?: boolean;
 }
@@ -40,6 +56,10 @@ interface RawGoogleEvent {
   end?: string;
   attendees?: string[];
   location?: string;
+  meeting_url?: string | null;
+  meetingUrl?: string | null;
+  hangoutLink?: string | null;
+  description?: string | null;
   calendarName?: string;
   isAllDay?: boolean;
 }
@@ -66,6 +86,7 @@ function normalizeNative(e: RawNativeEvent): CalendarEvent | null {
     end: e.end,
     attendees: e.attendees ?? [],
     location: e.location,
+    meeting_url: normalizeMeetingUrl(e.meeting_url ?? e.meetingUrl),
     calendar_name: e.calendar_name,
     is_all_day: e.is_all_day ?? false,
     source: "native",
@@ -81,6 +102,10 @@ function normalizeGoogle(e: RawGoogleEvent): CalendarEvent | null {
     end: e.end,
     attendees: e.attendees ?? [],
     location: e.location,
+    meeting_url:
+      normalizeMeetingUrl(e.meeting_url ?? e.meetingUrl ?? e.hangoutLink) ??
+      extractMeetingUrlFromText(e.location) ??
+      extractMeetingUrlFromText(e.description),
     calendar_name: e.calendarName,
     is_all_day: e.isAllDay ?? false,
     source: "google",
@@ -99,10 +124,76 @@ function normalizeCalendarItem(
     end: e.end,
     attendees: e.attendees ?? [],
     location: e.location ?? undefined,
+    meeting_url: normalizeMeetingUrl(e.meetingUrl),
     calendar_name: e.calendarName,
     is_all_day: e.isAllDay ?? false,
     source,
   };
+}
+
+const MEETING_URL_PATTERN =
+  /(https?:\/\/[^\s<>"')\]]+|(?:(?:meet\.google\.com|(?:[\w-]+\.)?zoom\.us|teams\.microsoft\.com|teams\.live\.com|(?:[\w-]+\.)?webex\.com)\/[^\s<>"')\]]+))/i;
+
+function trimUrlPunctuation(value: string): string {
+  return value.replace(/[),.;\]]+$/g, "");
+}
+
+export function normalizeMeetingUrl(raw?: string | null): string | undefined {
+  const trimmed = raw?.trim();
+  if (!trimmed) return undefined;
+  const url = trimUrlPunctuation(trimmed);
+  if (/^https?:\/\//i.test(url)) return url;
+  if (
+    /^(meet\.google\.com|(?:[\w-]+\.)?zoom\.us|teams\.microsoft\.com|teams\.live\.com|(?:[\w-]+\.)?webex\.com)\//i.test(
+      url,
+    )
+  ) {
+    return `https://${url}`;
+  }
+  return undefined;
+}
+
+export function extractMeetingUrlFromText(
+  text?: string | null,
+): string | undefined {
+  if (!text) return undefined;
+  const match = text.match(MEETING_URL_PATTERN);
+  return normalizeMeetingUrl(match?.[0]);
+}
+
+export function meetingLinkFromUrl(
+  raw?: string | null,
+): CalendarMeetingLink | null {
+  const url = normalizeMeetingUrl(raw);
+  if (!url) return null;
+
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+
+  if (host === "meet.google.com") {
+    return { url, host, provider: "google-meet", label: "Join Google Meet" };
+  }
+  if (host === "zoom.us" || host.endsWith(".zoom.us")) {
+    return { url, host, provider: "zoom", label: "Join Zoom" };
+  }
+  if (host === "teams.microsoft.com" || host === "teams.live.com") {
+    return { url, host, provider: "teams", label: "Join Teams" };
+  }
+  return { url, host, provider: "meeting", label: "Join meeting" };
+}
+
+export function calendarEventMeetingLink(
+  event?: CalendarEvent | null,
+): CalendarMeetingLink | null {
+  if (!event) return null;
+  return (
+    meetingLinkFromUrl(event.meeting_url) ??
+    meetingLinkFromUrl(extractMeetingUrlFromText(event.location))
+  );
 }
 
 async function fetchNativeCalendar(

@@ -57,7 +57,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { normalizeQueueEventPayload } from "@/lib/chat-queue-controls";
 import { Skeleton } from "@/components/ui/skeleton";
-import { normalizeQueueEventPayload } from "@/lib/chat-queue-controls";
 
 interface ChatSidebarProps {
   className?: string;

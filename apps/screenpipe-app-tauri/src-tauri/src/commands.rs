@@ -98,6 +98,59 @@ fn native_notif_action_callback_inner(json_ptr: *const std::os::raw::c_char) {
         return;
     }
 
+    // Compound meeting action: open the actual call URL, then route the app to
+    // the live note. This is intentionally separate from generic link/deeplink
+    // handling because meeting-start notifications need both side effects.
+    if action_type == Some("meeting_join") {
+        let meeting_url = parsed
+            .as_ref()
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let deeplink_url = parsed
+            .as_ref()
+            .and_then(|v| v.get("deeplink_url").or_else(|| v.get("deeplinkUrl")))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        let Some(meeting_url) = meeting_url else {
+            warn!("meeting_join notification action has no url: {}", json);
+            return;
+        };
+
+        let app_clone = app.clone();
+        std::thread::spawn(move || {
+            use tauri_plugin_opener::OpenerExt;
+            if let Err(e) = app_clone.opener().open_url(&meeting_url, None::<&str>) {
+                error!(
+                    "failed to open meeting url '{}' from notification: {}",
+                    meeting_url, e
+                );
+            }
+
+            let Some(deeplink_url) = deeplink_url else {
+                return;
+            };
+            if !is_meeting_deeplink(&deeplink_url) {
+                return;
+            }
+
+            let app_for_show = app_clone.clone();
+            let _ = app_clone.run_on_main_thread(move || {
+                if let Err(e) = (ShowRewindWindow::Home {
+                    page: Some("meetings".to_string()),
+                })
+                .show(&app_for_show)
+                {
+                    error!("failed to show window for meeting_join: {}", e);
+                }
+            });
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let _ = app_clone.emit("deep-link-received", deeplink_url);
+        });
+        return;
+    }
+
     // URL-opening actions. Two distinct semantics, explicit types so senders
     // can't conflate them:
     //   "link"      → external URL, opened in the user's default browser

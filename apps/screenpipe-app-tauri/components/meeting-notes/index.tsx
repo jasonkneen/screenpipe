@@ -482,6 +482,7 @@ export function MeetingNotesSection({
         onResume={() => handleResume(selected)}
         onSaved={handleSaved}
         onDeleted={handleDeleted}
+        calendarEvents={upcoming}
         initialTranscriptOpen={openTranscriptRequest?.id === selected.id}
         transcriptOpenRequestKey={
           openTranscriptRequest?.id === selected.id
