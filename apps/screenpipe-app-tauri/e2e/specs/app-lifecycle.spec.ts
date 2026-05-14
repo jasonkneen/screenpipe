@@ -69,7 +69,10 @@ describe("App lifecycle and UI stability", function () {
       hasBody: Boolean(document.body),
     }))) as { title: string; href: string; hasBody: boolean };
     expect(typeof context.title).toBe("string");
-    expect(context.href).toContain("tauri.localhost");
+    expect(
+      context.href.includes("tauri.localhost") ||
+        context.href.startsWith("tauri://localhost/")
+    ).toBe(true);
     expect(context.hasBody).toBe(true);
   });
 

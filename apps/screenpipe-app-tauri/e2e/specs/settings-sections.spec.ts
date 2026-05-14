@@ -47,6 +47,15 @@ const SETTINGS_SECTIONS = [
   { id: 'referral', keywords: ['free month', 'referral', 'invite', 'share'] },
 ] as const;
 
+function isSettingsSectionUrl(url: string, id: string): boolean {
+  const parsed = new URL(url);
+  if (parsed.pathname !== '/settings') return false;
+  if (id === 'display') {
+    return !parsed.searchParams.has('section') || parsed.searchParams.get('section') === 'display';
+  }
+  return parsed.searchParams.get('section') === id;
+}
+
 describe('Settings sections', () => {
   before(async () => {
     await waitForAppReady();
@@ -119,12 +128,7 @@ describe('Settings sections', () => {
       await browser.pause(500);
 
       const url = await browser.getUrl();
-      expect(url).toContain('/settings');
-      if (id === 'display') {
-        expect(url === 'http://tauri.localhost/settings' || url.includes('section=display')).toBe(true);
-      } else {
-        expect(url).toContain(`section=${id}`);
-      }
+      expect(isSettingsSectionUrl(url, id)).toBe(true);
 
       const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
       expect(body).not.toContain('unhandled runtime error');

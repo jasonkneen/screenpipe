@@ -259,7 +259,7 @@ jobs:
           libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev
           libxi-dev libgl1-mesa-dev mesa-utils libgl1-mesa-dri libegl1-mesa-dev
           libasound2-dev libpulse-dev
-          curl desktop-file-utils xdg-utils dbus-x11 xvfb
+          curl desktop-file-utils xdg-utils dbus-x11 gsettings-desktop-schemas xvfb
           x11-xserver-utils pkg-config libsqlite3-dev libbz2-dev
           zlib1g-dev libonig-dev libayatana-appindicator3-dev
           libsamplerate-dev libwebrtc-audio-processing-dev libgtk-3-dev
