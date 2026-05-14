@@ -401,10 +401,11 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("  port 3030: available");
             } else {
                 eprintln!("  port 3030: in use (screenpipe may already be running)");
+                eprintln!("    stop the existing process or run record with --port <PORT>");
             }
             eprintln!();
 
-            if perms_ok && system_audio_ok && ffmpeg_ok {
+            if perms_ok && system_audio_ok && ffmpeg_ok && port_ok {
                 eprintln!("all checks passed — ready to record");
             } else {
                 eprintln!("some checks failed — fix the issues above before running screenpipe");
