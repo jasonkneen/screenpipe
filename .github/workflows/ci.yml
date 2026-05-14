@@ -33,6 +33,25 @@ env:
   GIT_LFS_SKIP_SMUDGE: 1
 
 jobs:
+  cpal-pin-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Guard cpal Windows audio pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="crates/screenpipe-audio/Cargo.toml"
+          expected_url='git = "https://github.com/screenpipe/cpal.git"'
+          expected_rev='rev = "1be10a9d67ac7e6b9e0225d2d67ec56058a7dba2"'
+          cpal_line="$(grep -E '^cpal = ' "$manifest" || true)"
+
+          if [[ "$cpal_line" != *"$expected_url"* || "$cpal_line" != *"$expected_rev"* || "$cpal_line" == *'branch ='* ]]; then
+            echo "::error file=${manifest},line=35::cpal pin changed. Run the Windows audio RMS smoke on Win11 24H2 Communications-class hardware before merging, then update this guard with the verified rev."
+            echo "current cpal line: ${cpal_line:-<missing>}"
+            exit 1
+          fi
+
   test-ubuntu:
     runs-on: ubuntu-latest
     env:
