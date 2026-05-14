@@ -33,7 +33,7 @@ you're 5 minutes away from having AI that knows everything on your screen. here'
   </Step>
 
   <Step title="let it record for 2 minutes">
-    browse some websites. write some code. check slack. screenpipe is now capturing everything — text via OCR, audio via transcription, and accessibility data from your apps.
+    browse some websites. write some code. check slack. screenpipe is now capturing everything — app text primarily via accessibility APIs, OCR fallback when needed, and audio via transcription.
 
     you can verify it's working:
     ```bash
@@ -120,7 +120,7 @@ yes. everything is captured and stored locally by default. no data leaves your m
 yes. you can use your ChatGPT Plus, Claude Pro, or any API key. you can also use local models via Ollama for complete privacy. [learn more →](/chatgpt)
 
 **"what does screenpipe capture?"**
-screen text (via OCR and accessibility APIs), audio transcriptions, app names, window titles, browser URLs, and user input events. you control what's captured in **settings → recording**.
+screen text (primarily via accessibility APIs, with OCR fallback), audio transcriptions, app names, window titles, browser URLs, and user input events. you control what's captured in **settings → recording**.
 
 **"how do I connect my apps?"**
 go to **settings → connections** (under Data & Privacy). screenpipe supports dozens of integrations including Slack, Notion, Gmail, Google Calendar, Obsidian, Toggl, HubSpot, Salesforce, PostHog, Sentry, Zoom, and more. [learn more →](/connections)

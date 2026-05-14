@@ -17,8 +17,8 @@ for copy-paste API workflows beyond search, see [API recipes](/api-recipes).
 
 ## how it works
 
-1. **continuous capture** — screenpipe records your screen at configurable intervals (default: 1 frame/second)
-2. **OCR extraction** — text is extracted from every frame using native OCR engines
+1. **event-driven capture** — screenpipe captures when meaningful UI activity happens, with idle fallback captures
+2. **accessibility-first text extraction** — app text comes from the OS accessibility tree when available; OCR is the fallback for visual-only surfaces like games, remote desktops, or legacy frames
 3. **local storage** — everything stored in a local SQLite database
 4. **search API** — query via `localhost:3030/search` with filters
 
@@ -27,13 +27,13 @@ for copy-paste API workflows beyond search, see [API recipes](/api-recipes).
 ### find by text
 
 ```bash
-curl "http://localhost:3030/search?q=project+apollo+budget&content_type=ocr&limit=20"
+curl "http://localhost:3030/search?q=project+apollo+budget&content_type=all&limit=20"
 ```
 
 ### find by app
 
 ```bash
-curl "http://localhost:3030/search?app_name=Code&content_type=ocr&limit=20"
+curl "http://localhost:3030/search?app_name=Code&content_type=accessibility&limit=20"
 ```
 
 ### find by time range
@@ -51,7 +51,7 @@ curl "http://localhost:3030/search?browser_url=github.com&limit=10"
 ### combine filters
 
 ```bash
-curl "http://localhost:3030/search?q=deployment&app_name=Slack&content_type=ocr&limit=10"
+curl "http://localhost:3030/search?q=deployment&app_name=Slack&content_type=all&limit=10"
 ```
 
 ## search parameters
@@ -86,7 +86,7 @@ in the chat input box, type `@` to add mentions that filter what content the AI 
 
 | mention | shows | use case |
 | --- | --- | --- |
-| `@screen` | what was visible on screen (OCR text + screenshots) | "summarize my code changes" |
+| `@screen` | what was visible on screen (accessibility text, OCR fallback text, and screenshots) | "summarize my code changes" |
 | `@audio` | voice & meeting transcriptions | "what was said about the budget?" |
 | `@input` | clicks, keystrokes, app switches | "what apps did I use today?" |
 | `@today`, `@yesterday`, `@last-hour`, `@last-week` | time ranges | "changes this morning" |

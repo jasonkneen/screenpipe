@@ -56,7 +56,7 @@ if it returns an error:
 if health returns OK but search returns no results:
 - wait 1-2 minutes — screenpipe needs time to capture and process frames
 - check that your display is listed in settings → monitors
-- verify OCR is working: `curl "http://localhost:3030/search?limit=1"`
+- verify screen text search is working: `curl "http://localhost:3030/search?limit=1&content_type=all"`
 
 ---
 

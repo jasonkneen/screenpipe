@@ -24,7 +24,7 @@ for copy-paste workflows, start with [API recipes](/api-recipes). for the full i
 | GET | `/audio/list` | list audio devices |
 | GET | `/vision/list` | list monitors |
 | GET | `/frames/{id}` | get frame data |
-| GET | `/frames/{id}/ocr` | get frame OCR text |
+| GET | `/frames/{id}/ocr` | get frame OCR fallback text and bounds |
 | POST | `/tags/{type}/{id}` | add tags |
 | DELETE | `/tags/{type}/{id}` | remove tags |
 | POST | `/raw_sql` | execute raw SQL |
@@ -36,7 +36,7 @@ for copy-paste workflows, start with [API recipes](/api-recipes). for the full i
 ## search example
 
 ```bash
-curl "http://localhost:3030/search?q=meeting&limit=10&content_type=ocr"
+curl "http://localhost:3030/search?q=meeting&limit=10&content_type=all"
 ```
 
 ## search parameters

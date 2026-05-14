@@ -23,7 +23,7 @@ create a screenpipe pipe that [DESCRIBE WHAT YOU WANT].
 
 ## what is screenpipe?
 
-screenpipe is a desktop app that continuously records your screen (OCR) and audio (transcription).
+screenpipe is a desktop app that captures your screen text primarily through accessibility APIs, falls back to OCR when needed, and records audio transcriptions.
 it runs a local API at http://localhost:3030 that lets you query everything you've seen, said, or heard.
 
 ## what is a pipe?
@@ -72,9 +72,9 @@ curl "http://localhost:3030/search?limit=20&content_type=all&start_time=<ISO8601
 - min_length / max_length: filter by text length
 - speaker_ids: filter audio by speaker IDs
 
-### vision results (what was on screen)
+### screen text results (what was on screen)
 each result contains:
-- text: the extracted text visible on screen
+- text: extracted accessibility text or OCR fallback text visible on screen
 - app_name: which app was active (e.g. "Arc", "Cursor", "Slack")
 - window_name: the window title
 - browser_url: the URL if it was a browser
@@ -480,7 +480,7 @@ schedule: every 1h
 permissions:
   allow:
     - App(Slack, Chrome)
-    - Content(ocr, audio)
+    - Content(accessibility, audio)
   deny:
     - Api(* /meetings/stop)
     - App(1Password)

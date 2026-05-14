@@ -29,7 +29,7 @@ use this before debugging MCP, pipes, or chat. if it fails, the app is not servi
 curl "http://localhost:3030/search?limit=20&content_type=all"
 ```
 
-`content_type=all` can return OCR text, audio transcripts, input events, accessibility data, app names, window titles, and browser URLs.
+`content_type=all` can return accessibility text, OCR fallback text, audio transcripts, input events, app names, window titles, and browser URLs.
 
 ## 3. search one app or website
 
@@ -102,7 +102,7 @@ curl "http://localhost:3030/frames/123/context"
 curl "http://localhost:3030/frames/123/metadata"
 ```
 
-use frame endpoints when you already have a `frame_id` from search and need the OCR text, surrounding context, or metadata.
+use frame endpoints when you already have a `frame_id` from search and need the captured text, surrounding accessibility context, OCR fallback data, or metadata.
 
 ## 10. search structured UI elements
 
@@ -111,7 +111,7 @@ curl "http://localhost:3030/elements?q=submit&limit=20"
 curl "http://localhost:3030/frames/123/elements"
 ```
 
-elements come from the accessibility tree. they are useful for finding buttons, links, fields, and UI labels that OCR may miss.
+elements come from the accessibility tree. they are useful for finding buttons, links, fields, and UI labels directly, instead of relying on visual OCR.
 
 ## 11. use read-only SQL
 
