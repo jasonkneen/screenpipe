@@ -13,6 +13,7 @@ pub mod mcp;
 pub mod pipe;
 pub mod presets;
 pub mod status;
+mod store_file;
 pub mod sync;
 pub mod vault;
 pub mod vision;
