@@ -1347,10 +1347,24 @@ async fn main() {
             // app without granting Screen Recording / Microphone TCC. The
             // server (DB + HTTP) still boots; only SCK + audio capture skip.
             // See get_e2e_seed_flags above for parsing.
-            if get_e2e_seed_flags().iter().any(|f| f == "no-recording") {
+            let e2e_flags = get_e2e_seed_flags();
+            if e2e_flags.iter().any(|f| f == "no-recording") {
                 store.recording.disable_audio = true;
                 store.recording.disable_vision = true;
                 info!("E2E seed: recording disabled (vision + audio)");
+            }
+            if e2e_flags.iter().any(|f| f == "cloud-audio-fallback") {
+                store.recording.disable_audio = false;
+                store.recording.disable_vision = true;
+                store.recording.audio_transcription_engine = "screenpipe-cloud".to_string();
+                store.user = store::User::default();
+                store
+                    .extra
+                    .insert("_parakeetDefaultMigrationDone".to_string(), json!(true));
+                store
+                    .extra
+                    .insert("_proCloudMigrationDone".to_string(), json!(true));
+                info!("E2E seed: screenpipe cloud audio fallback");
             }
 
             app.manage(store.clone());
@@ -1720,6 +1734,8 @@ async fn main() {
                             if !disable_audio && !permissions_check.microphone.permitted() {
                                 warn!("Microphone permission not granted: {:?}. Audio recording will not work.", permissions_check.microphone);
                             }
+
+                            crate::recording::notify_audio_engine_fallback(&store_clone);
 
                             info!("Starting server core + capture on dedicated runtime...");
 
