@@ -916,6 +916,10 @@ mod tests {
         let prior_mode = std::env::var("SCREENPIPE_ENTERPRISE_UPLOAD_MODE").ok();
         let prior_root_key = std::env::var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_ROOT_KEY_B64").ok();
         let prior_key_id = std::env::var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_KEY_ID").ok();
+        let prior_recovery_root_key =
+            std::env::var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_ROOT_KEY_B64").ok();
+        let prior_recovery_key_id =
+            std::env::var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_KEY_ID").ok();
 
         // Case 1: no license env → None.
         std::env::remove_var("SCREENPIPE_ENTERPRISE_LICENSE_KEY");
@@ -972,14 +976,27 @@ mod tests {
             "SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_KEY_ID",
             "tenant-root-v1",
         );
+        std::env::set_var(
+            "SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_ROOT_KEY_B64",
+            base64::engine::general_purpose::STANDARD.encode([8u8; 32]),
+        );
+        std::env::set_var(
+            "SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_KEY_ID",
+            "tenant-recovery-v1",
+        );
         let dir = TempDir::new().unwrap();
         let cfg =
             EnterpriseSyncConfig::from_env(dir.path().to_path_buf(), "dev".into(), "host".into())
                 .unwrap();
         match cfg.upload_mode {
             EnterpriseUploadMode::DirectEncrypted(direct) => {
-                assert_eq!(direct.key_id, "tenant-root-v1");
-                assert_eq!(direct.root_key, [9u8; 32]);
+                assert_eq!(direct.recipients.len(), 2);
+                assert_eq!(direct.recipients[0].purpose, "primary");
+                assert_eq!(direct.recipients[0].key_id, "tenant-root-v1");
+                assert_eq!(direct.recipients[0].root_key, [9u8; 32]);
+                assert_eq!(direct.recipients[1].purpose, "recovery");
+                assert_eq!(direct.recipients[1].key_id, "tenant-recovery-v1");
+                assert_eq!(direct.recipients[1].root_key, [8u8; 32]);
                 assert_eq!(direct.ticket_url, "https://staging/upload-ticket");
                 assert_eq!(direct.complete_url, "https://staging/upload-complete");
             }
@@ -988,6 +1005,20 @@ mod tests {
 
         // Case 6: direct upload without a valid root key fails closed.
         std::env::set_var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_ROOT_KEY_B64", "bad");
+        let dir = TempDir::new().unwrap();
+        assert!(EnterpriseSyncConfig::from_env(
+            dir.path().to_path_buf(),
+            "dev".into(),
+            "host".into(),
+        )
+        .is_none());
+
+        // Case 7: direct upload without a recovery key also fails closed.
+        std::env::set_var(
+            "SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_ROOT_KEY_B64",
+            base64::engine::general_purpose::STANDARD.encode([9u8; 32]),
+        );
+        std::env::remove_var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_ROOT_KEY_B64");
         let dir = TempDir::new().unwrap();
         assert!(EnterpriseSyncConfig::from_env(
             dir.path().to_path_buf(),
@@ -1016,6 +1047,19 @@ mod tests {
         match prior_key_id {
             Some(v) => std::env::set_var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_KEY_ID", v),
             None => std::env::remove_var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_KEY_ID"),
+        }
+        match prior_recovery_root_key {
+            Some(v) => std::env::set_var(
+                "SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_ROOT_KEY_B64",
+                v,
+            ),
+            None => {
+                std::env::remove_var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_ROOT_KEY_B64")
+            }
+        }
+        match prior_recovery_key_id {
+            Some(v) => std::env::set_var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_KEY_ID", v),
+            None => std::env::remove_var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_KEY_ID"),
         }
     }
 
@@ -1092,8 +1136,20 @@ mod tests {
         cfg.upload_mode = EnterpriseUploadMode::DirectEncrypted(DirectUploadConfig {
             ticket_url,
             complete_url,
-            root_key: [3u8; 32],
-            key_id: "tenant-root-v1".to_string(),
+            recipients: vec![
+                enterprise_upload::DirectUploadKeyRecipientConfig {
+                    purpose: "primary".to_string(),
+                    key_provider: "mdm_symmetric_v1".to_string(),
+                    key_id: "tenant-root-v1".to_string(),
+                    root_key: [3u8; 32],
+                },
+                enterprise_upload::DirectUploadKeyRecipientConfig {
+                    purpose: "recovery".to_string(),
+                    key_provider: "mdm_symmetric_v1".to_string(),
+                    key_id: "tenant-recovery-v1".to_string(),
+                    root_key: [4u8; 32],
+                },
+            ],
         });
         cfg
     }

@@ -39,8 +39,15 @@ pub enum EnterpriseUploadMode {
 pub struct DirectUploadConfig {
     pub ticket_url: String,
     pub complete_url: String,
-    pub root_key: [u8; KEY_SIZE],
+    pub recipients: Vec<DirectUploadKeyRecipientConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectUploadKeyRecipientConfig {
+    pub purpose: String,
+    pub key_provider: String,
     pub key_id: String,
+    pub root_key: [u8; KEY_SIZE],
 }
 
 impl EnterpriseUploadMode {
@@ -53,28 +60,71 @@ impl EnterpriseUploadMode {
         match mode.as_str() {
             "" | "screenpipe_write" | "hosted_ingest" => Some(Self::HostedIngest),
             "direct_upload" | "direct_upload_encrypted" => {
-                let key_b64 =
-                    match std::env::var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_ROOT_KEY_B64") {
-                        Ok(v) if !v.trim().is_empty() => v,
-                        _ => {
-                            warn!(
-                            "enterprise sync: direct upload requested but root key env is missing"
+                let primary_key_b64 = match required_env(
+                    "SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_ROOT_KEY_B64",
+                ) {
+                    Some(v) => v,
+                    None => {
+                        warn!(
+                            "enterprise sync: direct upload requested but primary root key env is missing"
                         );
-                            return None;
-                        }
-                    };
-                let root_key = match decode_root_key(&key_b64) {
-                    Ok(k) => k,
-                    Err(e) => {
-                        warn!("enterprise sync: invalid direct upload root key: {}", e);
                         return None;
                     }
                 };
-                let key_id = std::env::var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_KEY_ID")
+                let recovery_key_b64 = match required_env(
+                    "SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_ROOT_KEY_B64",
+                ) {
+                    Some(v) => v,
+                    None => {
+                        warn!(
+                            "enterprise sync: direct upload requested but recovery root key env is missing"
+                        );
+                        return None;
+                    }
+                };
+                let primary_root_key = match decode_root_key(&primary_key_b64) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        warn!(
+                            "enterprise sync: invalid direct upload primary root key: {}",
+                            e
+                        );
+                        return None;
+                    }
+                };
+                let recovery_root_key = match decode_root_key(&recovery_key_b64) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        warn!(
+                            "enterprise sync: invalid direct upload recovery root key: {}",
+                            e
+                        );
+                        return None;
+                    }
+                };
+                let primary_key_id = std::env::var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_KEY_ID")
                     .ok()
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "mdm-root-v1".to_string());
+                    .unwrap_or_else(|| "mdm-primary-v1".to_string());
+                let recovery_key_id =
+                    std::env::var("SCREENPIPE_ENTERPRISE_DIRECT_UPLOAD_RECOVERY_KEY_ID")
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "mdm-recovery-v1".to_string());
+                if primary_key_id == recovery_key_id {
+                    warn!(
+                        "enterprise sync: direct upload primary and recovery key ids must differ"
+                    );
+                    return None;
+                }
+                if primary_root_key == recovery_root_key {
+                    warn!(
+                        "enterprise sync: direct upload primary and recovery root keys must differ"
+                    );
+                    return None;
+                }
                 let ticket_url = std::env::var("SCREENPIPE_ENTERPRISE_UPLOAD_TICKET_URL")
                     .ok()
                     .filter(|s| !s.trim().is_empty())
@@ -87,8 +137,20 @@ impl EnterpriseUploadMode {
                 Some(Self::DirectEncrypted(DirectUploadConfig {
                     ticket_url,
                     complete_url,
-                    root_key,
-                    key_id,
+                    recipients: vec![
+                        DirectUploadKeyRecipientConfig {
+                            purpose: "primary".to_string(),
+                            key_provider: "mdm_symmetric_v1".to_string(),
+                            key_id: primary_key_id,
+                            root_key: primary_root_key,
+                        },
+                        DirectUploadKeyRecipientConfig {
+                            purpose: "recovery".to_string(),
+                            key_provider: "mdm_symmetric_v1".to_string(),
+                            key_id: recovery_key_id,
+                            root_key: recovery_root_key,
+                        },
+                    ],
                 }))
             }
             other => {
@@ -130,11 +192,19 @@ impl DirectUploadCursors {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DirectUploadEncryption {
     pub algorithm: String,
-    pub key_wrap_algorithm: String,
-    pub key_id: String,
+    pub primary_key_id: String,
     pub nonce_b64: String,
+    pub recipients: Vec<DirectUploadKeyRecipient>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DirectUploadKeyRecipient {
+    pub purpose: String,
+    pub key_provider: String,
+    pub key_id: String,
+    pub key_wrap_algorithm: String,
     pub wrapped_data_key_b64: String,
-    pub wrap_nonce_b64: String,
+    pub wrap_nonce_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -196,9 +266,21 @@ pub fn encrypt_direct_upload_batch(
         .map_err(|e| EnterpriseSyncError::Ingest(format!("encrypt batch: {}", e)))?;
     let ciphertext_sha256 = compute_checksum(&ciphertext);
 
-    let wrap_nonce = generate_nonce();
-    let wrapped_data_key = encrypt(data_key_bytes, &direct.root_key, &wrap_nonce)
-        .map_err(|e| EnterpriseSyncError::Ingest(format!("wrap data key: {}", e)))?;
+    let recipients = wrap_data_key_for_recipients(direct, data_key_bytes)?;
+    let primary_key_id = recipients
+        .iter()
+        .find(|r| r.purpose == "primary")
+        .map(|r| r.key_id.clone())
+        .ok_or_else(|| {
+            EnterpriseSyncError::Ingest(
+                "direct upload requires a primary key recipient".to_string(),
+            )
+        })?;
+    if !recipients.iter().any(|r| r.purpose == "recovery") {
+        return Err(EnterpriseSyncError::Ingest(
+            "direct upload requires a recovery key recipient".to_string(),
+        ));
+    }
 
     let batch_id = compute_batch_id(&cfg.device_id, &plaintext_sha256, &counts, &cursors);
 
@@ -217,11 +299,9 @@ pub fn encrypt_direct_upload_batch(
             cursors,
             encryption: DirectUploadEncryption {
                 algorithm: DIRECT_UPLOAD_ALGORITHM.to_string(),
-                key_wrap_algorithm: DIRECT_UPLOAD_ALGORITHM.to_string(),
-                key_id: direct.key_id.clone(),
+                primary_key_id,
                 nonce_b64: BASE64.encode(nonce),
-                wrapped_data_key_b64: BASE64.encode(wrapped_data_key),
-                wrap_nonce_b64: BASE64.encode(wrap_nonce),
+                recipients,
             },
         },
         ciphertext,
@@ -434,6 +514,40 @@ fn decode_root_key(raw: &str) -> Result<[u8; KEY_SIZE], String> {
     Ok(key)
 }
 
+fn required_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn wrap_data_key_for_recipients(
+    direct: &DirectUploadConfig,
+    data_key_bytes: &[u8; KEY_SIZE],
+) -> Result<Vec<DirectUploadKeyRecipient>, EnterpriseSyncError> {
+    if direct.recipients.len() < 2 {
+        return Err(EnterpriseSyncError::Ingest(
+            "direct upload requires primary and recovery key recipients".to_string(),
+        ));
+    }
+
+    let mut recipients = Vec::with_capacity(direct.recipients.len());
+    for recipient in &direct.recipients {
+        let wrap_nonce = generate_nonce();
+        let wrapped_data_key = encrypt(data_key_bytes, &recipient.root_key, &wrap_nonce)
+            .map_err(|e| EnterpriseSyncError::Ingest(format!("wrap data key: {}", e)))?;
+        recipients.push(DirectUploadKeyRecipient {
+            purpose: recipient.purpose.clone(),
+            key_provider: recipient.key_provider.clone(),
+            key_id: recipient.key_id.clone(),
+            key_wrap_algorithm: DIRECT_UPLOAD_ALGORITHM.to_string(),
+            wrapped_data_key_b64: BASE64.encode(wrapped_data_key),
+            wrap_nonce_b64: Some(BASE64.encode(wrap_nonce)),
+        });
+    }
+    Ok(recipients)
+}
+
 fn sibling_enterprise_endpoint(ingest_url: &str, endpoint: &str) -> String {
     let trimmed = ingest_url.trim_end_matches('/');
     if let Some(base) = trimmed.strip_suffix("/ingest") {
@@ -460,8 +574,20 @@ mod tests {
         DirectUploadConfig {
             ticket_url: "https://screenpi.pe/api/enterprise/upload-ticket".to_string(),
             complete_url: "https://screenpi.pe/api/enterprise/upload-complete".to_string(),
-            root_key: [7u8; KEY_SIZE],
-            key_id: "tenant-root-v1".to_string(),
+            recipients: vec![
+                DirectUploadKeyRecipientConfig {
+                    purpose: "primary".to_string(),
+                    key_provider: "mdm_symmetric_v1".to_string(),
+                    key_id: "tenant-root-v1".to_string(),
+                    root_key: [7u8; KEY_SIZE],
+                },
+                DirectUploadKeyRecipientConfig {
+                    purpose: "recovery".to_string(),
+                    key_provider: "mdm_symmetric_v1".to_string(),
+                    key_id: "tenant-recovery-v1".to_string(),
+                    root_key: [8u8; KEY_SIZE],
+                },
+            ],
         }
     }
 
@@ -527,17 +653,46 @@ mod tests {
             batch.manifest.ciphertext_sha256,
             compute_checksum(&batch.ciphertext)
         );
+        assert_eq!(batch.manifest.encryption.primary_key_id, "tenant-root-v1");
+        assert_eq!(batch.manifest.encryption.recipients.len(), 2);
         assert!(!String::from_utf8_lossy(&batch.ciphertext).contains("secret customer text"));
 
+        let primary = batch
+            .manifest
+            .encryption
+            .recipients
+            .iter()
+            .find(|r| r.purpose == "primary")
+            .unwrap();
+        let recovery = batch
+            .manifest
+            .encryption
+            .recipients
+            .iter()
+            .find(|r| r.purpose == "recovery")
+            .unwrap();
+
         let wrap_nonce: Vec<u8> = BASE64
-            .decode(&batch.manifest.encryption.wrap_nonce_b64)
+            .decode(primary.wrap_nonce_b64.as_ref().unwrap())
             .unwrap();
         let mut wrap_nonce_arr = [0u8; 12];
         wrap_nonce_arr.copy_from_slice(&wrap_nonce);
-        let wrapped: Vec<u8> = BASE64
-            .decode(&batch.manifest.encryption.wrapped_data_key_b64)
+        let wrapped: Vec<u8> = BASE64.decode(&primary.wrapped_data_key_b64).unwrap();
+        let data_key = decrypt(&wrapped, &direct.recipients[0].root_key, &wrap_nonce_arr).unwrap();
+
+        let recovery_wrap_nonce: Vec<u8> = BASE64
+            .decode(recovery.wrap_nonce_b64.as_ref().unwrap())
             .unwrap();
-        let data_key = decrypt(&wrapped, &direct.root_key, &wrap_nonce_arr).unwrap();
+        let mut recovery_wrap_nonce_arr = [0u8; 12];
+        recovery_wrap_nonce_arr.copy_from_slice(&recovery_wrap_nonce);
+        let recovery_wrapped: Vec<u8> = BASE64.decode(&recovery.wrapped_data_key_b64).unwrap();
+        let recovery_data_key = decrypt(
+            &recovery_wrapped,
+            &direct.recipients[1].root_key,
+            &recovery_wrap_nonce_arr,
+        )
+        .unwrap();
+        assert_eq!(recovery_data_key, data_key);
 
         let nonce: Vec<u8> = BASE64.decode(&batch.manifest.encryption.nonce_b64).unwrap();
         let mut nonce_arr = [0u8; 12];
