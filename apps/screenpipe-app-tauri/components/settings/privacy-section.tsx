@@ -154,8 +154,22 @@ function EncryptDataCard({
         toast({ title: "Keychain access denied", description: "Could not enable encryption. Try again later.", variant: "destructive" });
       }
     } else {
-      // Disable: just turn off store.bin encryption (credentials stay encrypted, which is fine)
-      onEncryptStoreChange(false);
+      // Disable: decrypt credentials first, then turn off store.bin encryption.
+      const res = await commands.disableKeychainEncryption();
+      if (res.status === "ok" && res.data.state === "disabled") {
+        setKeychainState("disabled");
+        onEncryptStoreChange(false);
+        toast({
+          title: "Encryption disabled",
+          description: "Credentials and settings are now stored without keychain encryption.",
+        });
+      } else {
+        toast({
+          title: "Could not disable encryption",
+          description: "Encrypted credentials could not be decrypted. Check keychain access and try again.",
+          variant: "destructive",
+        });
+      }
     }
 
     setToggling(false);

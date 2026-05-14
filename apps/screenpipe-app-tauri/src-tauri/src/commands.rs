@@ -1632,6 +1632,57 @@ pub async fn enable_keychain_encryption() -> Result<KeychainStatus, String> {
 #[specta::specta]
 pub async fn disable_keychain_encryption() -> Result<KeychainStatus, String> {
     let data_dir = screenpipe_core::paths::default_screenpipe_data_dir();
+    let db_path = data_dir.join("db.sqlite");
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+
+    if db_path.exists() {
+        let pool = sqlx::SqlitePool::connect(&db_url).await.map_err(|e| {
+            format!("failed to open secret database before disabling encryption: {e}")
+        })?;
+        let plain_store = screenpipe_secrets::SecretStore::new(pool.clone(), None)
+            .await
+            .map_err(|e| format!("failed to open secret store: {e}"))?;
+        let encrypted_count = plain_store
+            .encrypted_secret_count()
+            .await
+            .map_err(|e| format!("failed to inspect encrypted secrets: {e}"))?;
+
+        if encrypted_count > 0 {
+            let key = match crate::secrets::get_key() {
+                crate::secrets::KeyResult::Found(key) => key,
+                crate::secrets::KeyResult::AccessDenied => {
+                    return Err(format!(
+                        "Cannot disable encryption yet: {encrypted_count} stored secret(s) are encrypted, but keychain access was denied."
+                    ));
+                }
+                crate::secrets::KeyResult::NotFound => {
+                    return Err(format!(
+                        "Cannot disable encryption yet: {encrypted_count} stored secret(s) are encrypted, but the keychain key was not found."
+                    ));
+                }
+                crate::secrets::KeyResult::Unavailable => {
+                    return Err(format!(
+                        "Cannot disable encryption yet: {encrypted_count} stored secret(s) are encrypted, but the keychain is unavailable."
+                    ));
+                }
+            };
+
+            let encrypted_store = screenpipe_secrets::SecretStore::new(pool, Some(key))
+                .await
+                .map_err(|e| format!("failed to open encrypted secret store: {e}"))?;
+            match encrypted_store.decrypt_encrypted_secrets().await {
+                Ok(count) => {
+                    tracing::info!("decrypted {} secrets before keychain opt-out", count);
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "Cannot disable encryption until encrypted secrets are decrypted: {e}"
+                    ));
+                }
+            }
+        }
+    }
+
     screenpipe_secrets::mark_encryption_disabled(&data_dir)
         .map_err(|e| format!("failed to remove .encrypt-store flag: {e}"))?;
     if let Err(e) = crate::secrets::delete_key() {

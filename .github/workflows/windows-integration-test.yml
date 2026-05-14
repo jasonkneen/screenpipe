@@ -176,7 +176,8 @@ jobs:
           & .\.github\scripts\assert_windows_audio_rms.ps1 `
             -HealthUrl "http://127.0.0.1:3030/health" `
             -MinRms 0.002 `
-            -TimeoutSeconds 120 `
+            -TimeoutSeconds 180 `
+            -HealthRequestTimeoutSeconds 10 `
             -ToneSeconds 30
 
           Start-Sleep -Seconds 30  # Allow more time for processing

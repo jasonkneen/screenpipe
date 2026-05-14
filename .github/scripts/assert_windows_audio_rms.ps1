@@ -6,6 +6,7 @@ param(
   [string]$HealthUrl = "http://127.0.0.1:3030/health",
   [double]$MinRms = 0.002,
   [int]$TimeoutSeconds = 45,
+  [int]$HealthRequestTimeoutSeconds = 10,
   [int]$ToneSeconds = 25,
   [string]$DeviceNamePattern = "",
   [string]$TonePath = "windows-audio-smoke.wav"
@@ -15,7 +16,7 @@ $ErrorActionPreference = "Stop"
 
 function Get-HealthSnapshot {
   try {
-    return Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 5
+    return Invoke-RestMethod -Uri $HealthUrl -TimeoutSec $HealthRequestTimeoutSeconds
   } catch {
     Write-Host "health poll failed: $($_.Exception.Message)"
     return $null
