@@ -80,6 +80,7 @@ jobs:
         override: true
         rustflags: ""
         target: x86_64-pc-windows-msvc
+        cache-bin: false
 
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
@@ -95,6 +96,7 @@ jobs:
       with:
         workspaces: apps/screenpipe-app-tauri/src-tauri
         shared-key: screenpipe-tauri-e2e
+        cache-bin: false
 
     - name: Configure Bun cache on same drive as workspace (Windows perf fix)
       shell: pwsh
@@ -390,6 +392,7 @@ jobs:
         override: true
         rustflags: ""
         target: x86_64-unknown-linux-gnu
+        cache-bin: false
 
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
@@ -404,6 +407,7 @@ jobs:
       with:
         workspaces: apps/screenpipe-app-tauri/src-tauri
         shared-key: screenpipe-tauri-e2e
+        cache-bin: false
 
     - name: Install frontend dependencies
       working-directory: ./apps/screenpipe-app-tauri
@@ -492,6 +496,7 @@ jobs:
         override: true
         rustflags: ""
         target: aarch64-apple-darwin
+        cache-bin: false
 
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
@@ -507,6 +512,7 @@ jobs:
       with:
         workspaces: apps/screenpipe-app-tauri/src-tauri
         shared-key: screenpipe-tauri-e2e
+        cache-bin: false
 
     - name: Cache macOS build artifacts
       uses: actions/cache@v4
