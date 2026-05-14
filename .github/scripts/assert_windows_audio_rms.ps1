@@ -15,7 +15,7 @@ $ErrorActionPreference = "Stop"
 
 function Get-HealthSnapshot {
   try {
-    return Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 3
+    return Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 5
   } catch {
     Write-Host "health poll failed: $($_.Exception.Message)"
     return $null
