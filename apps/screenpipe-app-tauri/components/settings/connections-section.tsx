@@ -20,7 +20,7 @@ import { Command } from "@tauri-apps/plugin-shell";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { message, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { localFetch } from "@/lib/api";
-import { writeFile, readTextFile, mkdir } from "@tauri-apps/plugin-fs";
+import { exists, writeFile, readTextFile, mkdir } from "@tauri-apps/plugin-fs";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { platform } from "@tauri-apps/plugin-os";
 import { join, homeDir, tempDir, dirname } from "@tauri-apps/api/path";
@@ -81,13 +81,15 @@ async function findClaudeExeOnWindows(): Promise<string | null> {
     ];
     for (const p of candidates) {
       try {
-        const check = Command.create("cmd", ["/c", "dir", "/b", p]);
-        const result = await check.execute();
-        if (result.code === 0) return p;
+        if (await exists(p)) return p;
       } catch { continue; }
     }
   } catch { /* ignore */ }
   return null;
+}
+
+async function openWindowsShellTarget(target: string): Promise<void> {
+  await invoke("open_windows_shell_target", { target });
 }
 
 import {
@@ -524,9 +526,9 @@ function ClaudePanel({ onConnected, onDisconnected }: { onConnected?: () => void
     if (os === "windows") {
       // Check for MSIX package folder first, then fall back to traditional exe search
       homeDir().then(home => join(home, "AppData", "Local", "Packages", "Claude_pzs8sxrjxfjjc"))
-        .then(msixDir => Command.create("cmd", ["/c", "if", "exist", msixDir, "echo", "yes"]).execute())
-        .then(r => {
-          if (r.stdout.trim() === "yes") { setClaudeAppInstalled(true); return; }
+        .then(msixDir => exists(msixDir))
+        .then(isMsixInstalled => {
+          if (isMsixInstalled) { setClaudeAppInstalled(true); return; }
           return findClaudeExeOnWindows().then(exe => setClaudeAppInstalled(!!exe));
         })
         .catch(() => setClaudeAppInstalled(false));
@@ -574,11 +576,13 @@ function ClaudePanel({ onConnected, onDisconnected }: { onConnected?: () => void
       if (os === "macos") await Command.create("open", ["-a", "Claude"]).execute();
       else if (os === "windows") {
         // Try MSIX launch via Windows shell app launcher first
-        const msixResult = await Command.create("cmd", ["/c", "start", "", "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude"]).execute().catch(() => null);
-        if (msixResult?.code === 0) return;
+        const msixOpened = await openWindowsShellTarget("shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude")
+          .then(() => true)
+          .catch(() => false);
+        if (msixOpened) return;
         // Fall back to traditional exe path
         const exe = await findClaudeExeOnWindows();
-        if (exe) await Command.create("cmd", ["/c", "start", "", exe]).execute();
+        if (exe) await openWindowsShellTarget(exe);
         else await openUrl("https://claude.ai/download");
       } else await openUrl("https://claude.ai/download");
     } catch { await openUrl("https://claude.ai/download"); }
@@ -649,7 +653,7 @@ function CursorPanel({ onConnected, onDisconnected }: { onConnected?: () => void
     try {
       const os = platform();
       if (os === "macos") await Command.create("open", ["-a", "Cursor"]).execute();
-      else if (os === "windows") await Command.create("cmd", ["/c", "start", "", "cursor"]).execute();
+      else if (os === "windows") await openWindowsShellTarget("cursor");
       else await openUrl("https://cursor.com");
     } catch { await openUrl("https://cursor.com"); }
   };
@@ -710,7 +714,7 @@ function CodexPanel({ onConnected, onDisconnected }: { onConnected?: () => void;
     try {
       const os = platform();
       if (os === "macos") await Command.create("open", ["-a", "Codex"]).execute();
-      else if (os === "windows") await Command.create("cmd", ["/c", "start", "", "Codex"]).execute();
+      else if (os === "windows") await openWindowsShellTarget("Codex");
       else await openUrl("https://chatgpt.com/codex");
     } catch { await openUrl("https://chatgpt.com/codex"); }
   };

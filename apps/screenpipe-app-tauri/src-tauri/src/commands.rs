@@ -2484,6 +2484,38 @@ pub async fn open_note_path(path: String) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
+pub fn open_windows_shell_target(target: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "start", "", &target])
+            .creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+        match cmd.status() {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(format!(
+                "failed to open Windows shell target {}: {}",
+                target, status
+            )),
+            Err(e) => Err(format!(
+                "failed to open Windows shell target {}: {}",
+                target, e
+            )),
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = target;
+        Err("Windows shell targets are only supported on Windows".to_string())
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn set_native_theme(app_handle: tauri::AppHandle, theme: String) -> Result<(), String> {
     info!("setting native theme to: {}", theme);
     let tauri_theme = match theme.as_str() {
