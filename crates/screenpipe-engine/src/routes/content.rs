@@ -75,6 +75,9 @@ pub struct OCRContent {
 pub struct AudioContent {
     pub chunk_id: i64,
     pub transcription: String,
+    /// Convenience alias for generic clients and agents that read `text` on
+    /// every content row. Same value as `transcription`.
+    pub text: String,
     pub timestamp: DateTime<Utc>,
     pub file_path: String,
     pub offset_index: i64,

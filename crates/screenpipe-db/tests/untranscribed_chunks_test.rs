@@ -563,6 +563,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_live_transcripts_order_by_actual_time_not_timestamp_text() {
+        let db = setup_test_db().await;
+
+        let meeting_start = chrono::DateTime::parse_from_rfc3339("2026-05-14T17:59:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let meeting_end = chrono::DateTime::parse_from_rfc3339("2026-05-14T18:05:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let meeting_id = sqlx::query(
+            "INSERT INTO meetings (meeting_start, meeting_end, meeting_app, detection_source) \
+             VALUES (?1, ?2, 'manual', 'manual')",
+        )
+        .bind(meeting_start.to_rfc3339())
+        .bind(meeting_end.to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+
+        sqlx::query(
+            "INSERT INTO meeting_transcript_segments \
+             (meeting_id, provider, model, item_id, device_name, device_type, speaker_name, transcript, captured_at) \
+             VALUES (?1, 'deepgram-live', 'nova-3', 'later-local-offset', 'test-mic', 'input', 'me', 'local offset later', ?2)",
+        )
+        .bind(meeting_id)
+        .bind("2026-05-14T11:01:00-07:00")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO meeting_transcript_segments \
+             (meeting_id, provider, model, item_id, device_name, device_type, speaker_name, transcript, captured_at) \
+             VALUES (?1, 'deepgram-live', 'nova-3', 'earlier-utc', 'test-mic', 'input', 'me', 'utc earlier', ?2)",
+        )
+        .bind(meeting_id)
+        .bind("2026-05-14T18:00:30Z")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let rows = db
+            .list_meeting_transcript_segments(meeting_id)
+            .await
+            .unwrap();
+        let transcripts = rows
+            .iter()
+            .map(|row| row.transcript.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(transcripts, vec!["utc earlier", "local offset later"]);
+
+        let latest = db
+            .search(
+                "",
+                ContentType::Audio,
+                1,
+                0,
+                Some(meeting_start),
+                Some(meeting_end),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(latest.len(), 1);
+        let SearchResult::Audio(audio) = &latest[0] else {
+            panic!("expected latest live transcript as audio result");
+        };
+        assert_eq!(audio.transcription, "local offset later");
+    }
+
+    #[tokio::test]
     async fn test_returns_transcriptions_without_speaker() {
         let db = setup_test_db().await;
 

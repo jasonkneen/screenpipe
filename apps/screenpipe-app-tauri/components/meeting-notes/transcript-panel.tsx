@@ -91,6 +91,8 @@ interface SpeakerBlock {
   startMs: number;
   text: string;
   segmentCount: number;
+  source: "background" | "live";
+  liveFinal?: boolean;
   // First chunk in the block — what SpeakerAssignPopover needs to play the
   // audio preview and call /speakers/reassign.
   firstAudioChunkId: number;
@@ -112,13 +114,39 @@ function normalizeForDedupe(text: string) {
   return text.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function timestampMs(iso: string): number {
+  const ms = new Date(iso).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function sortChunks(chunks: MeetingAudioChunk[]): MeetingAudioChunk[] {
+  return [...chunks].sort((a, b) => {
+    const byTime = timestampMs(a.timestamp) - timestampMs(b.timestamp);
+    if (byTime !== 0) return byTime;
+    const rank = (source?: string) => (source === "live" ? 0 : 1);
+    const bySource = rank(a.source) - rank(b.source);
+    if (bySource !== 0) return bySource;
+    return a.audioChunkId - b.audioChunkId;
+  });
+}
+
+function compareBlocks(a: SpeakerBlock, b: SpeakerBlock): number {
+  const byTime = a.startMs - b.startMs;
+  if (byTime !== 0) return byTime;
+  const rank = (source: SpeakerBlock["source"]) =>
+    source === "live" ? 0 : 1;
+  const bySource = rank(a.source) - rank(b.source);
+  if (bySource !== 0) return bySource;
+  return a.key.localeCompare(b.key);
+}
+
 function groupBySpeaker(chunks: MeetingAudioChunk[]): SpeakerBlock[] {
   const out: SpeakerBlock[] = [];
-  for (const c of chunks) {
+  for (const c of sortChunks(chunks)) {
     const text = (c.transcription ?? "").trim();
     if (!text) continue;
-    const ts = new Date(c.timestamp).getTime();
-    if (Number.isNaN(ts)) continue;
+    const ts = timestampMs(c.timestamp);
+    if (ts <= 0) continue;
     const speakerName = c.speakerName || (c.isInput ? "me" : "speaker");
     const speakerId = c.isInput ? null : c.speakerId;
     const last = out[out.length - 1];
@@ -139,12 +167,34 @@ function groupBySpeaker(chunks: MeetingAudioChunk[]): SpeakerBlock[] {
         startMs: ts,
         text,
         segmentCount: 1,
+        source: c.source ?? "background",
         firstAudioChunkId: c.audioChunkId,
         firstAudioFilePath: c.audioFilePath,
       });
     }
   }
   return out;
+}
+
+function liveBlockToSpeakerBlock(
+  block: LiveTranscriptBlock,
+  index: number,
+): SpeakerBlock | null {
+  const text = block.text.trim();
+  const startMs = timestampMs(block.capturedAt);
+  if (!text || startMs <= 0) return null;
+  return {
+    key: `live-${block.key}-${index}`,
+    speakerId: null,
+    speakerName: block.deviceType.toLowerCase() === "input" ? "me" : "speaker",
+    startMs,
+    text,
+    segmentCount: 1,
+    source: "live",
+    liveFinal: block.final,
+    firstAudioChunkId: 0,
+    firstAudioFilePath: "",
+  };
 }
 
 function formatRelative(ms: number, startMs: number): string {
@@ -404,6 +454,17 @@ export function TranscriptPanel({
       return !durableText.includes(normalized.slice(0, 80));
     });
   }, [chunks, liveBlocks]);
+  const visibleLiveSpeakerBlocks = useMemo(
+    () =>
+      visibleLiveBlocks
+        .map(liveBlockToSpeakerBlock)
+        .filter((block): block is SpeakerBlock => Boolean(block)),
+    [visibleLiveBlocks],
+  );
+  const displayBlocks = useMemo(
+    () => [...blocks, ...visibleLiveSpeakerBlocks].sort(compareBlocks),
+    [blocks, visibleLiveSpeakerBlocks],
+  );
 
   const liveLabel = useMemo(() => {
     if (!isLive) return null;
@@ -415,8 +476,8 @@ export function TranscriptPanel({
   // Plain-text dump of the whole transcript (not the filtered view) for
   // clipboard. Each block becomes a "[hh:mm] name\ntext" paragraph.
   const handleCopy = async () => {
-    if (blocks.length === 0) return;
-    const text = blocks
+    if (displayBlocks.length === 0) return;
+    const text = displayBlocks
       .map((b) => `[${formatClock(b.startMs)}] ${b.speakerName}\n${b.text}`)
       .join("\n\n");
     try {
@@ -433,15 +494,23 @@ export function TranscriptPanel({
   // count visible so empty results aren't confusing.
   const filteredBlocks = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return blocks;
-    return blocks.filter(
+    if (!q) return displayBlocks;
+    return displayBlocks.filter(
       (b) =>
         b.text.toLowerCase().includes(q) ||
         b.speakerName.toLowerCase().includes(q),
     );
-  }, [blocks, query]);
-  const hasTranscriptContent =
-    visibleLiveBlocks.length > 0 || filteredBlocks.length > 0;
+  }, [displayBlocks, query]);
+  const hasTranscriptContent = displayBlocks.length > 0;
+
+  useEffect(() => {
+    if (!isOpen || !isLive || query.trim()) return;
+    const el = containerRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+  }, [displayBlocks.length, isLive, isOpen, query]);
 
   // Empty state copy depends on *why* the list is empty — the difference
   // matters: "still recording" vs "no audio captured" vs "no matches".
@@ -471,8 +540,7 @@ export function TranscriptPanel({
   ]);
   const compactEmptyState =
     Boolean(emptyCopy) && !loading && !hasTranscriptContent;
-  const showSearch =
-    chunks.length > 0 || visibleLiveBlocks.length > 0 || Boolean(query.trim());
+  const showSearch = displayBlocks.length > 0 || Boolean(query.trim());
 
   return (
     <>
@@ -511,10 +579,10 @@ export function TranscriptPanel({
                 {liveLabel}
               </span>
             )}
-            {chunks.length > 0 && (
+            {displayBlocks.length > 0 && (
               <span className="text-[11px] text-muted-foreground/70">
                 {filteredBlocks.length}
-                {query.trim() ? ` / ${blocks.length}` : ""} segments
+                {query.trim() ? ` / ${displayBlocks.length}` : ""} segments
               </span>
             )}
           </div>
@@ -523,7 +591,7 @@ export function TranscriptPanel({
               variant="ghost"
               size="sm"
               onClick={handleCopy}
-              disabled={blocks.length === 0}
+              disabled={displayBlocks.length === 0}
               className="h-7 w-7 p-0"
               title={copied ? "copied" : "copy transcript"}
             >
@@ -582,14 +650,6 @@ export function TranscriptPanel({
             </div>
           )}
 
-          {visibleLiveBlocks.length > 0 && (
-            <ol className="divide-y divide-border/50 border-b border-border/50">
-              {visibleLiveBlocks.map((block) => (
-                <LiveParagraph key={block.key} block={block} />
-              ))}
-            </ol>
-          )}
-
           {filteredBlocks.length > 0 && (
             <ol className="divide-y divide-border/50">
               {filteredBlocks.map((b) => (
@@ -608,29 +668,6 @@ export function TranscriptPanel({
   );
 }
 
-function LiveParagraph({ block }: { block: LiveTranscriptBlock }) {
-  const captured = new Date(block.capturedAt).getTime();
-  return (
-    <li className="px-4 py-2.5 bg-muted/30" style={{ contain: "layout paint" }}>
-      <div className="flex items-baseline gap-2 mb-1">
-        <span className="inline-flex items-center gap-1 text-[11px] font-medium tracking-tight text-foreground/80">
-          <User className="h-3 w-3" />
-          {block.deviceType === "input" ? "me" : "speaker"}
-        </span>
-        <span className="text-[10px] text-muted-foreground/60">
-          {Number.isNaN(captured) ? "live" : formatClock(captured)}
-        </span>
-        <span className="text-[10px] text-foreground/70">
-          {block.final ? "final" : "live"}
-        </span>
-      </div>
-      <p className="text-xs leading-relaxed whitespace-pre-wrap break-words">
-        {block.text}
-      </p>
-    </li>
-  );
-}
-
 function SpeakerParagraph({
   block,
   meetingStartMs,
@@ -646,25 +683,32 @@ function SpeakerParagraph({
       style={{ contain: "layout paint" }}
     >
       <div className="flex items-baseline gap-2 mb-1">
-        <SpeakerAssignPopover
-          audioChunkId={block.firstAudioChunkId}
-          speakerId={block.speakerId ?? undefined}
-          speakerName={block.speakerName}
-          audioFilePath={block.firstAudioFilePath}
-          onAssigned={onSpeakerAssigned}
-        >
-          <span
-            className="inline-flex items-center gap-1 text-[11px] font-medium tracking-tight text-foreground/80 hover:text-foreground hover:underline underline-offset-2 cursor-pointer"
-            title={
-              block.speakerId != null
-                ? `speaker #${block.speakerId} — click to rename or reassign`
-                : "click to assign a speaker"
-            }
+        {block.firstAudioFilePath ? (
+          <SpeakerAssignPopover
+            audioChunkId={block.firstAudioChunkId}
+            speakerId={block.speakerId ?? undefined}
+            speakerName={block.speakerName}
+            audioFilePath={block.firstAudioFilePath}
+            onAssigned={onSpeakerAssigned}
           >
+            <span
+              className="inline-flex items-center gap-1 text-[11px] font-medium tracking-tight text-foreground/80 hover:text-foreground hover:underline underline-offset-2 cursor-pointer"
+              title={
+                block.speakerId != null
+                  ? `speaker #${block.speakerId} — click to rename or reassign`
+                  : "click to assign a speaker"
+              }
+            >
+              <User className="h-3 w-3 text-muted-foreground/70 self-center" />
+              {block.speakerName}
+            </span>
+          </SpeakerAssignPopover>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-[11px] font-medium tracking-tight text-foreground/80">
             <User className="h-3 w-3 text-muted-foreground/70 self-center" />
             {block.speakerName}
           </span>
-        </SpeakerAssignPopover>
+        )}
         <span
           className="text-[10px] text-muted-foreground/60 font-mono tabular-nums"
           title={new Date(block.startMs).toLocaleString()}
@@ -674,6 +718,12 @@ function SpeakerParagraph({
             {" · "}
             {formatClock(block.startMs)}
           </span>
+          {block.source === "live" && (
+            <span className="text-muted-foreground/50">
+              {" · "}
+              {block.liveFinal ? "final" : "live"}
+            </span>
+          )}
         </span>
       </div>
       <p className="text-xs leading-relaxed text-foreground/90 whitespace-pre-wrap break-words">

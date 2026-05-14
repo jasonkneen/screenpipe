@@ -361,6 +361,16 @@ export function NoteView({
       // meetings where the cached snapshot can be stale).
       const ctx = await fetchMeetingContext(fresh);
       setMeetingCtx(ctx);
+      const transcriptStart = new Date(fresh.meeting_start).toISOString();
+      const transcriptEnd = (
+        fresh.meeting_end ? new Date(fresh.meeting_end) : new Date()
+      ).toISOString();
+      const transcript = await fetchMeetingAudio(
+        transcriptStart,
+        transcriptEnd,
+        5000,
+        fresh.id,
+      );
 
       // Use the user-picked summary pipe's body as the directive when one is
       // set. The chat path knows the meeting id so we prepend that and let
@@ -386,6 +396,7 @@ export function NoteView({
         prompt: buildEnrichedSummarizePrompt({
           meeting: fresh,
           context: ctx,
+          transcript,
           directiveOverride,
         }),
         autoSend: true,

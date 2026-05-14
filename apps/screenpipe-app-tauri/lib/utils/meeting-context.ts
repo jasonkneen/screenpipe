@@ -62,6 +62,22 @@ interface MeetingTranscriptSegment {
   capturedAt: string;
 }
 
+function timestampMs(iso: string): number {
+  const ms = new Date(iso).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function sortAudioChunks(chunks: MeetingAudioChunk[]): MeetingAudioChunk[] {
+  return [...chunks].sort((a, b) => {
+    const byTime = timestampMs(a.timestamp) - timestampMs(b.timestamp);
+    if (byTime !== 0) return byTime;
+    const rank = (source?: string) => (source === "live" ? 0 : 1);
+    const bySource = rank(a.source) - rank(b.source);
+    if (bySource !== 0) return bySource;
+    return a.audioChunkId - b.audioChunkId;
+  });
+}
+
 export interface SpeakerSummary {
   name: string;
   segment_count: number;
@@ -253,6 +269,7 @@ export function pathFromUrl(url: string): string {
 interface SummarizeInput {
   meeting: MeetingRecord;
   context: MeetingContext;
+  transcript?: MeetingAudioChunk[] | null;
   /** Replace the built-in directive with the body of a user-chosen summary
    * pipe (e.g. one selected from the Meeting summary pipe picker). The
    * meeting id is prepended so the pipe body doesn't have to look it up. */
@@ -268,6 +285,7 @@ interface SummarizeInput {
 export function buildEnrichedSummarizePrompt({
   meeting,
   context,
+  transcript,
   directiveOverride,
 }: SummarizeInput): string {
   const start = new Date(meeting.meeting_start);
@@ -319,7 +337,10 @@ export function buildEnrichedSummarizePrompt({
       );
     }
 
-    if (a.audio_summary.top_transcriptions.length > 0) {
+    if (
+      !transcript?.length &&
+      a.audio_summary.top_transcriptions.length > 0
+    ) {
       const lines = a.audio_summary.top_transcriptions.slice(0, 8).map((t) => {
         const ts = formatTimeShort(t.timestamp);
         const txt = t.transcription.replace(/\s+/g, " ").trim().slice(0, 240);
@@ -328,6 +349,14 @@ export function buildEnrichedSummarizePrompt({
       });
       sections.push(`top transcript fragments:\n${lines.join("\n")}`);
     }
+  }
+
+  const transcriptText = renderTranscript(transcript ?? null, null);
+  if (transcriptText) {
+    const segmentCount = transcript?.length ?? 0;
+    sections.push(
+      `meeting transcript (chronological${segmentCount > 0 ? `, ${segmentCount} segments` : ""}):\n${transcriptText}`,
+    );
   }
 
   if (context.clipboardCount > 0) {
@@ -365,6 +394,8 @@ export function buildMeetingSummarizeInstructions(
     `search screenpipe for what happened during this meeting and summarize it: key topics, decisions, action items.`,
     ``,
     `meeting id: ${meetingId}`,
+    `primary transcript source: GET "http://localhost:3030/meetings/${meetingId}/transcript" and use each row's "transcript", "speakerName", "capturedAt", and "source" fields. sort rows by capturedAt before summarizing.`,
+    `fallback transcript source: /search?content_type=audio for the meeting time window. audio rows use content.transcription (not content.text); content.text may be missing for audio and should not be treated as an empty transcript.`,
     `if your summary is worth saving, append it to the meeting note (and refresh the title in the same call) via:`,
     `  curl -s -X PATCH "http://localhost:3030/meetings/${meetingId}" \\`,
     `    -H "Authorization: Bearer $SCREENPIPE_API_AUTH_KEY" \\`,
@@ -514,7 +545,7 @@ function renderTranscript(
   activity: ActivitySummary | null,
 ): string {
   if (full && full.length > 0) {
-    return full
+    return sortAudioChunks(full)
       .map((c) => {
         const ts = formatTimeShort(c.timestamp);
         const sp =
@@ -680,8 +711,7 @@ export async function fetchMeetingAudio(
       break;
     }
   }
-  out.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  return out;
+  return sortAudioChunks(out);
 }
 
 async function fetchRoutedMeetingTranscript(
@@ -718,10 +748,7 @@ async function fetchRoutedMeetingTranscript(
           source,
         };
       })
-      .sort(
-        (a, b) =>
-          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-      );
+      .sort((a, b) => timestampMs(a.timestamp) - timestampMs(b.timestamp));
   } catch {
     return [];
   }

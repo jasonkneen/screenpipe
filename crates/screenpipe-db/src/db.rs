@@ -3586,7 +3586,7 @@ impl DatabaseManager {
               AND (?5 IS NULL OR LENGTH(transcript) <= ?5)
               AND (?6 IS NULL OR speaker_name LIKE '%' || ?6 || '%' COLLATE NOCASE)
               AND (?7 IS NULL OR device_name LIKE '%' || ?7 || '%' COLLATE NOCASE)
-            ORDER BY captured_at DESC, id DESC
+            ORDER BY julianday(captured_at) DESC, id DESC
             LIMIT ?8 OFFSET ?9
             "#,
         )
@@ -8210,8 +8210,8 @@ LIMIT ? OFFSET ?
             ),
             live_bounds AS (
                 SELECT
-                    MIN(captured_at) AS first_live_at,
-                    MAX(captured_at) AS last_live_at
+                    MIN(julianday(captured_at)) AS first_live_at_jd,
+                    MAX(julianday(captured_at)) AS last_live_at_jd
                 FROM meeting_transcript_segments
                 WHERE meeting_id = ?1
             ),
@@ -8268,15 +8268,19 @@ LIMIT ? OFFSET ?
                   AND ac.file_path NOT LIKE 'cloud://%'
                   AND (s.id IS NULL OR s.hallucination = 0)
                   AND NOT (
-                      lb.first_live_at IS NOT NULL
-                      AND julianday(at.timestamp) >= julianday(datetime(lb.first_live_at, '-60 seconds'))
-                      AND julianday(at.timestamp) <= julianday(datetime(lb.last_live_at, '+60 seconds'))
+                      lb.first_live_at_jd IS NOT NULL
+                      AND julianday(at.timestamp) >= lb.first_live_at_jd - (60.0 / 86400.0)
+                      AND julianday(at.timestamp) <= lb.last_live_at_jd + (60.0 / 86400.0)
                   )
             )
-            SELECT * FROM live_segments
-            UNION ALL
-            SELECT * FROM background_segments
-            ORDER BY captured_at ASC, source DESC, id ASC
+            SELECT * FROM (
+                SELECT * FROM live_segments
+                UNION ALL
+                SELECT * FROM background_segments
+            )
+            ORDER BY julianday(captured_at) ASC,
+                     CASE source WHEN 'live' THEN 0 ELSE 1 END ASC,
+                     id ASC
             "#,
         )
         .bind(meeting_id)
