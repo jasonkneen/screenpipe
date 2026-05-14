@@ -1015,6 +1015,7 @@ async fn main() {
             owned_browser::owned_browser_set_bounds,
             owned_browser::owned_browser_navigate,
             owned_browser::owned_browser_hide,
+            owned_browser::owned_browser_resolve_session_access,
             permissions::reset_and_request_permission,
             permissions::get_missing_permissions,
             permissions::check_arc_installed,
