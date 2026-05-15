@@ -316,6 +316,7 @@ jobs:
         shell: bash
         env:
           SKIP_SCREENPIPE_SETUP: true # avoid trying to copy screenpipe binaries, not yet built (next step)
+          SCREENPIPE_RELEASE_TARGET: ${{ runner.arch == 'ARM64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
         run: bun ./scripts/pre_build.js
         working-directory: ./apps/screenpipe-app-tauri
 
