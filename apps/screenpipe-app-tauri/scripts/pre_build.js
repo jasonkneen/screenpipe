@@ -167,7 +167,7 @@ async function copyBunBinary() {
 		console.log(`downloading bun baseline v${bunVersion} for linux...`);
 		const tmpZip = path.join(cwd, 'bun-baseline.zip');
 		try {
-			await $`curl -L -o ${tmpZip} ${baselineUrl}`;
+			await downloadFile(baselineUrl, tmpZip, { retries: 10 });
 			await $`unzip -o ${tmpZip} -d ${cwd}/bun-baseline-tmp`;
 			const extractedBun = path.join(cwd, 'bun-baseline-tmp', 'bun-linux-x64-baseline', 'bun');
 			await copyFile(extractedBun, bunDest1);
@@ -207,7 +207,7 @@ async function copyBunBinary() {
 			const tmpZip = path.join(cwd, `bun-darwin-${label}.zip`);
 			const tmpDir = path.join(cwd, `bun-darwin-${label}-tmp`);
 			try {
-				await $`curl -L -o ${tmpZip} ${url}`;
+				await downloadFile(url, tmpZip, { retries: 10 });
 				await $`unzip -o ${tmpZip} -d ${tmpDir}`;
 				// The zip contains a folder like bun-darwin-aarch64/bun or bun-darwin-x64/bun
 				const entries = await fs.readdir(tmpDir);
