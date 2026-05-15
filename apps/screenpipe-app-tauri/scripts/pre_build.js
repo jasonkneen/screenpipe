@@ -8,7 +8,7 @@ import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import { setupOpenBlas } from './setup_openblas.js'
-import { findWget, find7z } from './find_tools.js'
+import { downloadFile, find7z } from './find_tools.js'
 
 const originalCWD = process.cwd()
 // Change CWD to src-tauri
@@ -452,7 +452,6 @@ async function copyVcredistDlls(arch = 'x64') {
 
 /* ########## Windows ########## */
 if (platform == 'windows') {
-	const wgetPath = await findWget();
 	const sevenZ = await find7z();
 
 	// Setup FFMPEG (x64: gyan.dev; arm64: tordona/ffmpeg-win-arm64)
@@ -467,7 +466,7 @@ if (platform == 'windows') {
 			const arm64Url = asset.browser_download_url
 			const arm64Filename = asset.name
 			console.log(`ffmpeg ARM64: ${arm64Url}`)
-			await $`${wgetPath} --no-config --tries=10 --retry-connrefused --waitretry=10 --secure-protocol=auto --no-check-certificate --show-progress ${arm64Url} -O ${arm64Filename}`
+			await downloadFile(arm64Url, arm64Filename, { retries: 10 })
 			await $`${sevenZ} x ${arm64Filename}`
 			// tordona 7z extracts to a single folder; move its contents to ffmpeg (or rename if single top-level dir)
 			const entries = await fs.readdir(cwd, { withFileTypes: true })
@@ -483,7 +482,7 @@ if (platform == 'windows') {
 			}
 			await fs.rm(path.join(cwd, arm64Filename), { force: true }).catch(() => {})
 		} else {
-			await $`${wgetPath} --no-config --tries=10 --retry-connrefused --waitretry=10 --secure-protocol=auto --no-check-certificate --show-progress ${config.windows.ffmpegUrl} -O ${config.windows.ffmpegName}.7z`
+			await downloadFile(config.windows.ffmpegUrl, `${config.windows.ffmpegName}.7z`, { retries: 10 })
 			await $`${sevenZ} x ${config.windows.ffmpegName}.7z`
 			await $`mv ${config.windows.ffmpegName} ${config.ffmpegRealname}`
 			await $`rm -rf ${config.windows.ffmpegName}.7z`
