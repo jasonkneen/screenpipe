@@ -24,7 +24,7 @@ on:
     branches: [main]
 
 concurrency:
-  group: release-app-${{ github.sha }}
+  group: release-app-${{ github.event_name }}-${{ github.sha }}
   cancel-in-progress: true
 
 env:
