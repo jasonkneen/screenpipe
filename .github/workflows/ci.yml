@@ -312,6 +312,9 @@ jobs:
         with:
           bun-version: 1.2.2
 
+      - name: Install macOS media sidecars
+        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+
       - name: Run pre_build.js
         shell: bash
         env:
