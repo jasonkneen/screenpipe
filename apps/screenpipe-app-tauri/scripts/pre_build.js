@@ -160,21 +160,24 @@ async function copyBunBinary() {
 			return;
 		}
 
-		// Download the baseline bun variant for broader glibc compatibility
-		// (the standard variant is built on Ubuntu 24.04 and crashes on older glibc distros)
+		// Download the baseline bun variant for broader glibc compatibility.
+		// Use npm's tarball mirror because GitHub release assets can 504 in CI.
 		const bunVersion = '1.3.10';
-		const baselineUrl = `https://github.com/oven-sh/bun/releases/download/bun-v${bunVersion}/bun-linux-x64-baseline.zip`;
+		const baselineUrl = `https://registry.npmjs.org/@oven/bun-linux-x64-baseline/-/bun-linux-x64-baseline-${bunVersion}.tgz`;
 		console.log(`downloading bun baseline v${bunVersion} for linux...`);
-		const tmpZip = path.join(cwd, 'bun-baseline.zip');
+		const tmpArchive = path.join(cwd, 'bun-baseline.tgz');
+		const tmpDir = path.join(cwd, 'bun-baseline-tmp');
 		try {
-			await downloadFile(baselineUrl, tmpZip, { retries: 10 });
-			await $`unzip -o ${tmpZip} -d ${cwd}/bun-baseline-tmp`;
-			const extractedBun = path.join(cwd, 'bun-baseline-tmp', 'bun-linux-x64-baseline', 'bun');
+			await downloadFile(baselineUrl, tmpArchive, { retries: 10 });
+			await fs.rm(tmpDir, { recursive: true, force: true });
+			await fs.mkdir(tmpDir, { recursive: true });
+			await $`tar -xzf ${tmpArchive} -C ${tmpDir}`;
+			const extractedBun = path.join(tmpDir, 'package', 'bin', 'bun');
 			await copyFile(extractedBun, bunDest1);
 			console.log(`bun baseline binary installed to ${bunDest1}`);
 			// cleanup
-			await fs.rm(tmpZip, { force: true });
-			await fs.rm(path.join(cwd, 'bun-baseline-tmp'), { recursive: true, force: true });
+			await fs.rm(tmpArchive, { force: true });
+			await fs.rm(tmpDir, { recursive: true, force: true });
 		} catch (error) {
 			console.error('failed to download bun baseline:', error);
 			process.exit(1);
