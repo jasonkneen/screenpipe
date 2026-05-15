@@ -6,14 +6,18 @@ import { $ } from 'bun'
 import fs from 'fs/promises'
 import path from 'path'
 
-export async function downloadFile(url, destination, { retries = 5 } = {}) {
+export async function downloadFile(url, destination, { retries = 5, timeoutMs = 30000 } = {}) {
 	let lastError;
 
 	for (let attempt = 1; attempt <= retries; attempt++) {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
 		try {
 			console.log(`downloading ${url} -> ${destination} (${attempt}/${retries})`);
 			const response = await fetch(url, {
 				redirect: 'follow',
+				signal: controller.signal,
 				headers: {
 					'user-agent': 'screenpipe-build',
 				},
@@ -31,6 +35,8 @@ export async function downloadFile(url, destination, { retries = 5 } = {}) {
 			if (attempt < retries) {
 				await new Promise((resolve) => setTimeout(resolve, Math.min(30000, 2000 * attempt)));
 			}
+		} finally {
+			clearTimeout(timeout);
 		}
 	}
 

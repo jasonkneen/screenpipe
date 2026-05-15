@@ -180,6 +180,14 @@ async function copyBunBinary() {
 			await fs.rm(tmpDir, { recursive: true, force: true });
 		} catch (error) {
 			console.error('failed to download bun baseline:', error);
+			const systemBun = await findOnPath('bun');
+			if (systemBun) {
+				console.warn(`falling back to system bun at ${systemBun}`);
+				await copyFile(systemBun, bunDest1);
+				await fs.rm(tmpArchive, { force: true });
+				await fs.rm(tmpDir, { recursive: true, force: true });
+				return;
+			}
 			process.exit(1);
 		}
 		return;
