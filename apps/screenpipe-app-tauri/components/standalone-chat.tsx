@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { Loader2, Send, Square, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal, Pencil, Pin, Shield, ShieldCheck, Sparkles, Plug, CornerDownRight } from "lucide-react";
 import { SchedulePromptDialog } from "@/components/chat/schedule-prompt-dialog";
 import { PipeContextBanner } from "@/components/chat/pipe-context-banner";
+import { SourceCitationFooter } from "@/components/chat/source-citation-footer";
 import { BrowserSidebar } from "@/components/browser-sidebar";
 import { toast } from "@/components/ui/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
@@ -63,6 +64,11 @@ import { SummaryCards } from "@/components/chat/summary-cards";
 import { type CustomTemplate } from "@/lib/summary-templates";
 import { usePipes } from "@/lib/hooks/use-pipes";
 import { localFetch, getApiBaseUrl } from "@/lib/api";
+import {
+  formatSourceCitationsMarkdown,
+  sourceCitationsFromMessage,
+  type SourceCitation,
+} from "@/lib/source-citations";
 import { getFaviconUrl } from "@/components/rewind/timeline/favicon-utils";
 import {
   formatSteerShortcut,
@@ -325,6 +331,7 @@ interface Message {
   images?: string[]; // base64 data URLs of attached images
   timestamp: number;
   contentBlocks?: ContentBlock[];
+  sourceCitations?: SourceCitation[];
   model?: string;
   provider?: string;
   retryPrompt?: string; // when set, renders a retry CTA on error messages
@@ -1501,6 +1508,10 @@ function MessageContent({ message, onImageClick, onRetry }: { message: Message; 
   const isUser = message.role === "user";
   const { settings } = useSettings();
   const hideThinkingBlocks = settings?.hideThinkingBlocks ?? true;
+  const sourceCitations = isUser ? [] : sourceCitationsFromMessage(message);
+  const sourceFooter = sourceCitations.length > 0 ? (
+    <SourceCitationFooter citations={sourceCitations} />
+  ) : null;
 
   // Retry CTA — shown at the bottom of error messages that have a retryPrompt
   const retryCta = !isUser && message.retryPrompt ? (
@@ -1548,6 +1559,7 @@ function MessageContent({ message, onImageClick, onRetry }: { message: Message; 
           }
           return null;
         })}
+        {sourceFooter}
         {retryCta}
       </div>
     );
@@ -1584,6 +1596,7 @@ function MessageContent({ message, onImageClick, onRetry }: { message: Message; 
     <div className="space-y-2">
       {imageThumbs}
       <MarkdownBlock text={message.content} isUser={isUser} />
+      {sourceFooter}
       {retryCta}
     </div>
   );
@@ -5342,6 +5355,13 @@ export function StandaloneChat({
       }
       if (sections.length > 0) {
         body = sections.join("\n\n");
+      }
+    }
+
+    if (m.role === "assistant") {
+      const citationsMarkdown = formatSourceCitationsMarkdown(sourceCitationsFromMessage(m));
+      if (citationsMarkdown) {
+        body = body ? `${body}\n\n${citationsMarkdown}` : citationsMarkdown;
       }
     }
 

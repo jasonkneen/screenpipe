@@ -12,6 +12,7 @@ import posthog from "posthog-js";
 import { User } from "../utils/tauri";
 import { SettingsStore } from "../utils/tauri";
 import { installAuthInterceptor } from "../auth-guard";
+import type { SourceCitation } from "@/lib/source-citations";
 export type VadSensitivity = "low" | "medium" | "high";
 
 export type AIProviderType =
@@ -80,6 +81,7 @@ export interface ChatMessage {
 	content: string;
 	timestamp: number;
 	contentBlocks?: any[];
+	sourceCitations?: SourceCitation[];
 	model?: string;
 	provider?: string;
 	/** UI override — when set, the sidebar / panel header renders this
