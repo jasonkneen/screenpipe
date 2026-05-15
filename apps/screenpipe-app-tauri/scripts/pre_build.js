@@ -205,23 +205,22 @@ async function copyBunBinary() {
 		bunDest1 = path.join(cwd, 'bun-aarch64-apple-darwin');
 		bunDest2 = path.join(cwd, 'bun-x86_64-apple-darwin');
 
-		if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') {
-			const releaseTarget = process.env.SCREENPIPE_RELEASE_TARGET;
-			if (releaseTarget) {
-				const bunDest = path.join(cwd, `bun-${releaseTarget}`);
-				if (await fs.exists(bunDest)) {
-					console.log('bun binary already exists for tauri.');
-					return;
-				}
-
-				const systemBun = await findOnPath('bun');
-				if (!systemBun) {
-					throw new Error('CI expected bun on PATH, but command lookup failed');
-				}
-				console.log(`using CI bun binary for tauri sidecar: ${systemBun}`);
-				await copyFile(systemBun, bunDest);
+		const releaseTarget = process.env.SCREENPIPE_RELEASE_TARGET;
+		if (releaseTarget) {
+			const bunDest = path.join(cwd, `bun-${releaseTarget}`);
+			if (await fs.exists(bunDest)) {
+				console.log(`bun binary already exists for ${releaseTarget}.`);
 				return;
 			}
+
+			const systemBun = await findOnPath('bun');
+			if (!systemBun) {
+				throw new Error(`expected bun on PATH for ${releaseTarget}, but command lookup failed`);
+			}
+
+			console.log(`using system bun binary for ${releaseTarget} tauri sidecar: ${systemBun}`);
+			await copyFile(systemBun, bunDest);
+			return;
 		}
 
 		if (await fs.exists(bunDest1) && await fs.exists(bunDest2)) {
