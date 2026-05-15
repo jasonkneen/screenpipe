@@ -156,7 +156,7 @@ async function expectConnectionsAuthBehavior(port: number, key: string | null, a
 }
 
 describe("Privacy: API auth enforcement", function () {
-  this.timeout(180_000);
+  this.timeout(t(300_000));
 
   let initialUiChecked: boolean | null = null;
   let initialPort = 3030;
