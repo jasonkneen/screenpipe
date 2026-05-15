@@ -4202,10 +4202,10 @@ export function StandaloneChat({
       }
     }).then(fn => { unlistenReauth = fn; });
 
-	    return () => {
-	      mounted = false;
-	      cancelStreamingMessageRender();
-	      for (const off of busUnregistrations) {
+    return () => {
+      mounted = false;
+      cancelStreamingMessageRender();
+      for (const off of busUnregistrations) {
         try { off(); } catch { /* ignore — tearing down */ }
       }
       unlistenLog?.();
