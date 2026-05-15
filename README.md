@@ -8,8 +8,8 @@
 <h1 align="center">[ screenpipe ]</h1>
 
 
-<p align="center">AI memory for your screen</p>
-<p align="center">run agents that work for you based on what you do</p>
+<p align="center">Give AI the ability to live your experience.</p>
+<p align="center">Records everything you do, say, hear 24/7, local, private, secure</p>
 
 
 <p align="center">
