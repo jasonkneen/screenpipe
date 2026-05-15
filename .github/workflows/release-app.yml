@@ -928,6 +928,7 @@ jobs:
           # (CI=true causes hdiutil to skip the background/icon layout stage)
           # See: https://github.com/tauri-apps/tauri-action/issues/740
           CI: false
+          SCREENPIPE_RELEASE_TARGET: ${{ matrix.target }}
           # Fix std::filesystem availability - requires macOS 10.15+
           # whisper.cpp ggml uses std::filesystem::path which needs 10.15
           # All these vars needed to ensure cmake picks up the deployment target
