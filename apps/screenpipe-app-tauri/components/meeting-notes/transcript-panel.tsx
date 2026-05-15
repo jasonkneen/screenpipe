@@ -92,7 +92,6 @@ interface SpeakerBlock {
   text: string;
   segmentCount: number;
   source: "background" | "live";
-  liveFinal?: boolean;
   // First chunk in the block — what SpeakerAssignPopover needs to play the
   // audio preview and call /speakers/reassign.
   firstAudioChunkId: number;
@@ -191,7 +190,6 @@ function liveBlockToSpeakerBlock(
     text,
     segmentCount: 1,
     source: "live",
-    liveFinal: block.final,
     firstAudioChunkId: 0,
     firstAudioFilePath: "",
   };
@@ -718,12 +716,6 @@ function SpeakerParagraph({
             {" · "}
             {formatClock(block.startMs)}
           </span>
-          {block.source === "live" && (
-            <span className="text-muted-foreground/50">
-              {" · "}
-              {block.liveFinal ? "final" : "live"}
-            </span>
-          )}
         </span>
       </div>
       <p className="text-xs leading-relaxed text-foreground/90 whitespace-pre-wrap break-words">

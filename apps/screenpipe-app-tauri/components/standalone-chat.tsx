@@ -18,13 +18,13 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { useSettings, ChatMessage, ChatConversation } from "@/lib/hooks/use-settings";
 import { cn } from "@/lib/utils";
-import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal, Pencil, Pin, Shield, ShieldCheck, Sparkles, Plug, CornerDownRight } from "lucide-react";
+import { Loader2, Send, Square, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal, Pencil, Pin, Shield, ShieldCheck, Sparkles, Plug, CornerDownRight } from "lucide-react";
 import { SchedulePromptDialog } from "@/components/chat/schedule-prompt-dialog";
 import { PipeContextBanner } from "@/components/chat/pipe-context-banner";
 import { BrowserSidebar } from "@/components/browser-sidebar";
 import { toast } from "@/components/ui/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
-import { PipeAIIcon, PipeAIIconLarge } from "@/components/pipe-ai-icon";
+import { PipeAIIconLarge } from "@/components/pipe-ai-icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { MemoizedReactMarkdown } from "@/components/markdown";
 import { VideoComponent } from "@/components/rewind/video";
@@ -83,6 +83,7 @@ interface MentionSuggestion {
 }
 
 const APP_SUGGESTION_LIMIT = 10;
+const STREAM_RENDER_THROTTLE_MS = 80;
 
 interface Speaker {
   id: number;
@@ -1189,7 +1190,7 @@ function MarkdownBlock({ text, isUser }: { text: string; isUser: boolean }) {
       className={cn(
         "prose prose-sm max-w-full break-words overflow-hidden [word-break:break-word]",
         isUser
-          ? "prose-invert dark:prose dark:text-background"
+          ? "text-foreground dark:prose-invert"
           : "dark:prose-invert"
       )}
       remarkPlugins={[remarkGfm]}
@@ -1599,14 +1600,14 @@ function CollapsibleUserMessage({ label, fullContent }: { label: string; fullCon
             setExpanded(!expanded);
           }}
           onMouseUp={(e) => e.stopPropagation()}
-          className="shrink-0 p-0.5 rounded hover:bg-background/20 text-background/60 hover:text-background/90 transition-colors"
+          className="shrink-0 p-0.5 rounded hover:bg-muted-foreground/10 text-muted-foreground hover:text-foreground transition-colors"
           title={expanded ? "Collapse prompt" : "Show full prompt"}
         >
           {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
         </button>
       </div>
       {expanded && (
-        <div className="mt-2 pt-2 border-t border-background/20 text-xs opacity-80 whitespace-pre-wrap break-words">
+        <div className="mt-2 pt-2 border-t border-border/50 text-xs text-muted-foreground whitespace-pre-wrap break-words">
           {fullContent}
         </div>
       )}
@@ -1897,7 +1898,6 @@ export function StandaloneChat({
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [streamedCharCount, setStreamedCharCount] = useState(0);
   // Prompts the user has queued while a previous one is still streaming.
   // Sourced from rust via the `pi-queue-changed` event — single source of
   // truth lives in `pi_command_queue.rs`. Cleared as soon as the drain loop
@@ -2004,6 +2004,7 @@ export function StandaloneChat({
   const piStreamingTextRef = useRef<string>("");
   const piMessageIdRef = useRef<string | null>(null);
   const piContentBlocksRef = useRef<ContentBlock[]>([]);
+  const streamRenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Last error text observed anywhere in the current Pi stream — used to surface
   // quota / credits_exhausted errors when agent_end arrives with no content and
   // no explicit stopReason=error on any message (some providers drop that flag).
@@ -2074,6 +2075,36 @@ export function StandaloneChat({
   const [conversationId, setConversationId] = useState<string | null>(
     initialSessionIdRef.current,
   );
+
+  const cancelStreamingMessageRender = useCallback(() => {
+    if (streamRenderTimerRef.current) {
+      clearTimeout(streamRenderTimerRef.current);
+      streamRenderTimerRef.current = null;
+    }
+  }, []);
+
+  const renderStreamingMessageSnapshot = useCallback(() => {
+    const msgId = piMessageIdRef.current;
+    if (!msgId) return;
+    const content = piStreamingTextRef.current;
+    const contentBlocks = [...piContentBlocksRef.current];
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msgId ? { ...m, content, contentBlocks } : m))
+    );
+  }, [setMessages]);
+
+  const flushStreamingMessageRender = useCallback(() => {
+    cancelStreamingMessageRender();
+    renderStreamingMessageSnapshot();
+  }, [cancelStreamingMessageRender, renderStreamingMessageSnapshot]);
+
+  const scheduleStreamingMessageRender = useCallback(() => {
+    if (streamRenderTimerRef.current) return;
+    streamRenderTimerRef.current = setTimeout(() => {
+      streamRenderTimerRef.current = null;
+      renderStreamingMessageSnapshot();
+    }, STREAM_RENDER_THROTTLE_MS);
+  }, [renderStreamingMessageSnapshot]);
 
   // Process an image file to base64
   // Resize image to max 1024px and compress as JPEG to keep base64 payload small
@@ -3031,6 +3062,24 @@ export function StandaloneChat({
   };
 
   useEffect(() => {
+    const handleComposerSteerShortcut = (event: KeyboardEvent) => {
+      if (showMentionDropdown) return;
+      if (isComposing || event.isComposing || event.keyCode === 229) return;
+      if (document.activeElement !== inputRef.current && event.target !== inputRef.current) return;
+      if (!isComposerSteerShortcut(event, isMac)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (input.trim() || pastedImages.length > 0) {
+        void steerMessage(input.trim());
+      }
+    };
+
+    window.addEventListener("keydown", handleComposerSteerShortcut, true);
+    return () => window.removeEventListener("keydown", handleComposerSteerShortcut, true);
+  }, [input, isComposing, isMac, pastedImages, showMentionDropdown]);
+
+  useEffect(() => {
     // Don't resolve preset until settings are loaded from the store —
     // before that, settings.aiPresets contains only the hardcoded default,
     // which would cause Pi to start with the wrong model then immediately restart.
@@ -3396,7 +3445,6 @@ export function StandaloneChat({
       piMessageIdRef.current = newAssistantId;
       piStreamingTextRef.current = "";
       piContentBlocksRef.current = [];
-      setStreamedCharCount(0);
       setIsLoading(true);
       setIsStreaming(true);
       const sidNow = piSessionIdRef.current;
@@ -3446,13 +3494,29 @@ export function StandaloneChat({
              foreground event handler */
         }
 
-        if (data.type === "message_update" && data.assistantMessageEvent) {
+        if (
+          data.type === "agent_end" ||
+          data.type === "pipe_done" ||
+          (data.type === "response" && data.success === false) ||
+          (data.type === "auto_retry_end" && data.success === false) ||
+          (data.type === "message_update" && data.assistantMessageEvent?.type === "error") ||
+          ((data.type === "message_start" || data.type === "message_end") &&
+            data.message?.role === "assistant" &&
+            data.message?.stopReason === "error")
+        ) {
+          cancelStreamingMessageRender();
+        }
+
+        if (
+          data.type === "message_update" &&
+          data.assistantMessageEvent &&
+          data.assistantMessageEvent.type !== "error"
+        ) {
           const evt = data.assistantMessageEvent;
           if (evt.type === "text_delta" && evt.delta) {
             // First delta of a queued turn → create the placeholder lazily.
             if (!ensureAssistantPlaceholder()) return;
             piStreamingTextRef.current += evt.delta;
-            setStreamedCharCount(piStreamingTextRef.current.length);
 
             // Append to last text block or create new one
             const blocks = piContentBlocksRef.current;
@@ -3463,14 +3527,7 @@ export function StandaloneChat({
               blocks.push({ type: "text", text: evt.delta });
             }
 
-            if (piMessageIdRef.current) {
-              const msgId = piMessageIdRef.current;
-              const content = piStreamingTextRef.current;
-              const contentBlocks = [...blocks];
-              setMessages((prev) =>
-                prev.map((m) => m.id === msgId ? { ...m, content, contentBlocks } : m)
-              );
-            }
+            scheduleStreamingMessageRender();
 
             // Trigger follow-up generation after enough content
             if (
@@ -3501,13 +3558,7 @@ export function StandaloneChat({
             if (thinkingBlock && thinkingBlock.type === "thinking") {
               thinkingBlock.text += evt.delta;
             }
-            if (piMessageIdRef.current) {
-              const msgId = piMessageIdRef.current;
-              const contentBlocks = [...blocks];
-              setMessages((prev) =>
-                prev.map((m) => m.id === msgId ? { ...m, content: m.content === "Processing..." ? "" : m.content, contentBlocks } : m)
-              );
-            }
+            scheduleStreamingMessageRender();
           } else if (evt.type === "thinking_end") {
             const blocks = piContentBlocksRef.current;
             const thinkingBlock = blocks[blocks.length - 1];
@@ -3656,6 +3707,7 @@ export function StandaloneChat({
             piStreamingTextRef.current.length > 0 ||
             piContentBlocksRef.current.length > 0;
           if (hasStreamedContent) {
+            flushStreamingMessageRender();
             piStreamingTextRef.current = "";
             piMessageIdRef.current = null;
             piContentBlocksRef.current = [];
@@ -4077,6 +4129,7 @@ export function StandaloneChat({
         if (!piMessageIdRef.current) return;
         const line = event.payload;
         if (line.includes("model_not_allowed") || line.includes("403")) {
+          cancelStreamingMessageRender();
           const msgId = piMessageIdRef.current;
           if (msgId) {
             setMessages((prev) =>
@@ -4084,6 +4137,7 @@ export function StandaloneChat({
             );
           }
         } else if (line.includes("429") || line.includes("rate") || line.includes("daily_limit")) {
+          cancelStreamingMessageRender();
           const msgId = piMessageIdRef.current;
           if (msgId) {
             setMessages((prev) =>
@@ -4091,6 +4145,7 @@ export function StandaloneChat({
             );
           }
         } else if (line.includes("content must be a string") || line.includes("does not support images") || line.includes("image_url is not supported")) {
+          cancelStreamingMessageRender();
           const msgId = piMessageIdRef.current;
           if (msgId) {
             setMessages((prev) =>
@@ -4147,9 +4202,10 @@ export function StandaloneChat({
       }
     }).then(fn => { unlistenReauth = fn; });
 
-    return () => {
-      mounted = false;
-      for (const off of busUnregistrations) {
+	    return () => {
+	      mounted = false;
+	      cancelStreamingMessageRender();
+	      for (const off of busUnregistrations) {
         try { off(); } catch { /* ignore — tearing down */ }
       }
       unlistenLog?.();
@@ -4441,7 +4497,10 @@ export function StandaloneChat({
     };
     setMessages((prev) => {
       const next = [...prev, newUserMessage];
-      void saveConversation(next);
+      void saveConversation(next, {
+        refreshHistory: false,
+        syncActiveConversation: false,
+      });
       return next;
     });
     setInput("");
@@ -4498,6 +4557,47 @@ export function StandaloneChat({
     }
   }
 
+  function clearActivePiTurnState() {
+    cancelStreamingMessageRender();
+    piStreamingTextRef.current = "";
+    piMessageIdRef.current = null;
+    piContentBlocksRef.current = [];
+    setIsLoading(false);
+    setIsStreaming(false);
+  }
+
+  async function interruptActivePiTurn() {
+    const hasActiveTurn = isLoading || isStreaming || !!piMessageIdRef.current;
+    if (!hasActiveTurn) return;
+
+    let aborted = false;
+    try {
+      const abortResult = await Promise.race([
+        commands.piAbort(piSessionIdRef.current),
+        new Promise<{ status: "error"; error: string }>((resolve) => {
+          window.setTimeout(() => resolve({ status: "error", error: "Abort timed out" }), 1_500);
+        }),
+      ]);
+      if (abortResult.status === "ok") {
+        aborted = true;
+      } else {
+        console.warn("[Pi] Abort before steering failed:", abortResult.error);
+      }
+    } catch (e) {
+      console.warn("[Pi] Abort before steering threw:", e);
+    }
+
+    if (!aborted) {
+      const providerConfig = buildProviderConfig();
+      if (!providerConfig) {
+        throw new Error("No AI preset selected");
+      }
+      await restartCurrentPiSession(providerConfig);
+    }
+
+    clearActivePiTurnState();
+  }
+
   async function sendPiMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[]) {
     // Auto-start Pi if it's not running yet (new session or crash recovery)
     if (!piInfo?.running) {
@@ -4549,21 +4649,7 @@ export function StandaloneChat({
       await piPresetSwitchPromiseRef.current;
     }
 
-    // If a previous message is still processing, abort it first.
-    // piAbort now waits for the Pi SDK to confirm the abort completed — no sleep needed.
-    if (piMessageIdRef.current) {
-      console.warn("[Pi] Aborting previous message before sending new one");
-      try {
-        await commands.piAbort(piSessionIdRef.current);
-      } catch (e) {
-        console.warn("[Pi] Failed to abort previous:", e);
-      }
-      piStreamingTextRef.current = "";
-      piMessageIdRef.current = null;
-      piContentBlocksRef.current = [];
-      setIsLoading(false);
-      setIsStreaming(false);
-    }
+    await interruptActivePiTurn();
 
     const outgoingImages = imageDataUrls ?? pastedImages;
     const shouldClearPastedImages = imageDataUrls == null && pastedImages.length > 0;
@@ -4582,7 +4668,6 @@ export function StandaloneChat({
     piStreamingTextRef.current = "";
     piMessageIdRef.current = assistantMessageId;
     piContentBlocksRef.current = [];
-    setStreamedCharCount(0);
 
     // Clear follow-ups for new message
     setFollowUpSuggestions([]);
@@ -4595,7 +4680,7 @@ export function StandaloneChat({
 
     setMessages((prev) => {
       const next = [...prev, newUserMessage];
-      void saveConversation(next);
+      void saveConversation(next, { refreshHistory: false });
       return next;
     });
     setInput("");
@@ -4966,7 +5051,10 @@ export function StandaloneChat({
         return true;
       });
       if (!removed) return prev;
-      void saveConversation(next);
+      void saveConversation(next, {
+        refreshHistory: false,
+        syncActiveConversation: false,
+      });
       return next;
     });
 
@@ -5498,27 +5586,20 @@ export function StandaloneChat({
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.2 }}
               className={cn(
-                "relative flex gap-3 min-w-0",
-                message.role === "user" ? "flex-row-reverse" : "flex-row"
+                "relative flex min-w-0",
+                message.role === "user" ? "justify-end" : "justify-start"
               )}
               data-testid={`chat-message-${message.role}`}
               data-message-id={message.id}
             >
               <div
                 className={cn(
-                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors",
+                  "group/message flex flex-col min-w-0",
                   message.role === "user"
-                    ? "bg-foreground text-background border-foreground"
-                    : "bg-muted/50 text-foreground border-border/50"
+                    ? "items-end max-w-[82%]"
+                    : "items-start w-full"
                 )}
               >
-                {message.role === "user" ? (
-                  <User className="h-4 w-4" />
-                ) : (
-                  <PipeAIIcon size={16} animated={false} />
-                )}
-              </div>
-              <div className="group/message flex-1 flex flex-col min-w-0">
               <div
                 onMouseDown={(e) => {
                   if (message.role !== "user" || isLoading || editingMessageId === message.id) return;
@@ -5548,15 +5629,15 @@ export function StandaloneChat({
                   setEditingMessageId(message.id);
                 }}
                 className={cn(
-                  "relative rounded-xl px-4 py-3 text-sm border overflow-hidden max-w-full transition-opacity",
+                  "relative rounded-xl px-4 py-3 text-sm overflow-hidden max-w-full transition-all",
                   message.role === "user"
-                    ? "bg-foreground text-background border-foreground"
-                    : "bg-muted/30 border-border/50",
+                    ? "bg-muted/60 text-foreground"
+                    : "bg-background text-foreground",
                   message.role === "user" && !isLoading && editingMessageId !== message.id && "cursor-text",
                   // Queued user messages — visually de-emphasised so the eye stays on
                   // the active turn. Cleared when pi-mono fires message_start for
                   // this turn (see handler above).
-                  message.queued && "opacity-50 border-dashed"
+                  message.queued && "bg-muted/35 text-muted-foreground opacity-80"
                 )}
               >
                 {editingMessageId === message.id ? (
@@ -5593,7 +5674,7 @@ export function StandaloneChat({
                       }
                     }}
                     rows={Math.min(8, Math.max(1, editDraft.split("\n").length))}
-                    className="w-full resize-none bg-transparent text-background placeholder:text-background/40 focus:outline-none"
+                    className="w-full resize-none bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none"
                   />
                 ) : (
                   <MessageContent message={message} onImageClick={(images, index) => setImageViewer({ images, index })} onRetry={(prompt) => sendMessage(prompt)} />

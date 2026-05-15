@@ -10,6 +10,9 @@ export type QueueEventPayload<TQueued> = {
 
 export type KeyLike = {
   key: string;
+  code?: string;
+  keyCode?: number;
+  which?: number;
   metaKey?: boolean;
   ctrlKey?: boolean;
   shiftKey?: boolean;
@@ -33,12 +36,20 @@ export function normalizeQueueEventPayload<TQueued>(
 }
 
 export function isComposerSteerShortcut(event: KeyLike, isMac: boolean): boolean {
+  const isEnter =
+    event.key === "Enter" ||
+    event.key === "NumpadEnter" ||
+    event.code === "Enter" ||
+    event.code === "NumpadEnter" ||
+    event.keyCode === 13 ||
+    event.which === 13;
+
   const hasPlatformModifier = isMac
     ? Boolean(event.metaKey && !event.ctrlKey)
     : Boolean(event.ctrlKey && !event.metaKey);
 
   return (
-    event.key === "Enter" &&
+    isEnter &&
     !event.shiftKey &&
     !event.altKey &&
     hasPlatformModifier

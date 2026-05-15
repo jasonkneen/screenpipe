@@ -37,6 +37,9 @@ describe("chat queue controls", () => {
     expect(isComposerSteerShortcut({ key: "Enter", metaKey: true }, true)).toBe(true);
     expect(isComposerSteerShortcut({ key: "Enter", ctrlKey: true }, true)).toBe(false);
     expect(isComposerSteerShortcut({ key: "Enter", ctrlKey: true }, false)).toBe(true);
+    expect(isComposerSteerShortcut({ key: "NumpadEnter", ctrlKey: true }, false)).toBe(true);
+    expect(isComposerSteerShortcut({ key: "", code: "NumpadEnter", ctrlKey: true }, false)).toBe(true);
+    expect(isComposerSteerShortcut({ key: "", keyCode: 13, ctrlKey: true }, false)).toBe(true);
     expect(isComposerSteerShortcut({ key: "Enter", metaKey: true }, false)).toBe(false);
     expect(isComposerSteerShortcut({ key: "Enter" }, false)).toBe(false);
     expect(isComposerSteerShortcut({ key: "Enter", metaKey: true, shiftKey: true }, true)).toBe(false);
