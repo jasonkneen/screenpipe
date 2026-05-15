@@ -165,6 +165,12 @@ export function MeetingNotesSection({
       const snapshot = await fetchUpcomingCalendarSnapshot({ hoursAhead: 8 });
       setConnectedCalendarSources(snapshot.connectedSources);
 
+      if (snapshot.events.length > 0) {
+        setUpcoming(snapshot.events);
+        setCalendarStatus("ready");
+        return;
+      }
+
       if (snapshot.connectedSources.length === 0) {
         setUpcoming([]);
         setCalendarStatus("not-connected");
@@ -175,12 +181,13 @@ export function MeetingNotesSection({
         snapshot.events.length === 0 &&
         snapshot.failedSources.length === snapshot.connectedSources.length
       ) {
-        setCalendarStatus((prev) => (prev === "loading" ? "error" : prev));
+        setUpcoming([]);
+        setCalendarStatus("error");
         return;
       }
 
-      setUpcoming(snapshot.events);
-      setCalendarStatus(snapshot.events.length > 0 ? "ready" : "empty");
+      setUpcoming([]);
+      setCalendarStatus("empty");
     } catch (err) {
       console.warn("meeting notes: failed to refresh calendar events", err);
       setCalendarStatus((prev) => (prev === "loading" ? "error" : prev));

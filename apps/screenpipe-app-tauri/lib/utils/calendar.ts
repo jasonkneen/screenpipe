@@ -264,20 +264,17 @@ async function fetchGoogleProvider(
   hoursBack: number,
   hoursAhead: number,
 ): Promise<ProviderCalendarResult> {
-  let statusKnown = false;
   let statusConnected = false;
   try {
     const status = await commands.oauthStatus("google-calendar", null);
-    statusKnown = status.status === "ok";
     statusConnected = status.status === "ok" && status.data.connected;
   } catch {
     // Fall back to probing the events endpoint below.
   }
 
-  if (statusKnown && !statusConnected) {
-    return { source: "google", connected: false, ok: true, events: [] };
-  }
-
+  // The status command can report disconnected when the access token is
+  // expired, even though a refresh token is present. The events endpoint is
+  // the source of truth because it refreshes before reading the calendar.
   const events = await fetchGoogleCalendar(hoursBack, hoursAhead);
   return {
     source: "google",
@@ -340,16 +337,18 @@ export async function fetchUpcomingCalendarSnapshot(opts?: {
     fetchGoogleProvider(hoursBack, hoursAhead),
     fetchIcsProvider(),
   ]);
+  const sourceConnected = (provider: ProviderCalendarResult) =>
+    provider.connected || provider.events.length > 0;
 
   return {
     events: mergeCalendarEvents(
       providers.flatMap((provider) => provider.events),
     ),
     connectedSources: providers
-      .filter((provider) => provider.connected)
+      .filter(sourceConnected)
       .map((provider) => provider.source),
     failedSources: providers
-      .filter((provider) => provider.connected && !provider.ok)
+      .filter((provider) => sourceConnected(provider) && !provider.ok)
       .map((provider) => provider.source),
   };
 }

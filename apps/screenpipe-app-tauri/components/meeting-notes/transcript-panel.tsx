@@ -10,7 +10,14 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Check, Copy, FileText, Loader2, User, X } from "lucide-react";
+import {
+  ArrowDown,
+  Check,
+  Copy,
+  Loader2,
+  User,
+  X,
+} from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -29,6 +36,16 @@ interface TranscriptPanelProps {
   isLive: boolean;
   /** Incremented by the parent after a meeting-level retranscribe finishes. */
   refreshKey?: number;
+  headerActions?: React.ReactNode;
+}
+
+const AUTO_FOLLOW_THRESHOLD_PX = 48;
+
+function isNearBottom(el: HTMLDivElement): boolean {
+  return (
+    el.scrollHeight - el.scrollTop - el.clientHeight <=
+    AUTO_FOLLOW_THRESHOLD_PX
+  );
 }
 
 interface LiveTranscriptDelta {
@@ -195,18 +212,6 @@ function liveBlockToSpeakerBlock(
   };
 }
 
-function formatRelative(ms: number, startMs: number): string {
-  const delta = Math.max(0, ms - startMs);
-  const total = Math.floor(delta / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  if (m >= 60) {
-    const h = Math.floor(m / 60);
-    return `${h}:${String(m % 60).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  }
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
 function formatClock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], {
     hour: "numeric",
@@ -244,6 +249,7 @@ export function TranscriptPanel({
   onClose,
   isLive,
   refreshKey = 0,
+  headerActions,
 }: TranscriptPanelProps) {
   const [chunks, setChunks] = useState<MeetingAudioChunk[]>([]);
   const [loading, setLoading] = useState(false);
@@ -255,6 +261,8 @@ export function TranscriptPanel({
     null,
   );
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [isFollowingLive, setIsFollowingLive] = useState(true);
+  const [hasUnseenLive, setHasUnseenLive] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Time bounds for the meeting. Live meetings extend to "now" so newly
@@ -266,11 +274,6 @@ export function TranscriptPanel({
     ).toISOString();
     return { start, end };
   }, [meeting.meeting_start, meeting.meeting_end, isLive]);
-
-  const startMs = useMemo(
-    () => new Date(meeting.meeting_start).getTime(),
-    [meeting.meeting_start],
-  );
 
   // Refetch all chunks for this meeting. Used by the interval poller while
   // live, and by SpeakerAssignPopover after a rename so the new speaker name
@@ -463,13 +466,10 @@ export function TranscriptPanel({
     () => [...blocks, ...visibleLiveSpeakerBlocks].sort(compareBlocks),
     [blocks, visibleLiveSpeakerBlocks],
   );
-
-  const liveLabel = useMemo(() => {
-    if (!isLive) return null;
-    if (liveError) return liveErrorSummary(liveError);
-    if (liveStatus?.live_transcription_enabled) return "streaming";
-    return "capturing";
-  }, [isLive, liveError, liveStatus?.live_transcription_enabled]);
+  const latestBlockSignal = useMemo(() => {
+    const latest = displayBlocks[displayBlocks.length - 1];
+    return latest ? `${latest.key}:${latest.text.length}` : "empty";
+  }, [displayBlocks]);
 
   // Plain-text dump of the whole transcript (not the filtered view) for
   // clipboard. Each block becomes a "[hh:mm] name\ntext" paragraph.
@@ -501,14 +501,48 @@ export function TranscriptPanel({
   }, [displayBlocks, query]);
   const hasTranscriptContent = displayBlocks.length > 0;
 
-  useEffect(() => {
-    if (!isOpen || !isLive || query.trim()) return;
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
     const el = containerRef.current;
     if (!el) return;
     requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
+      el.scrollTo({ top: el.scrollHeight, behavior });
+      setIsFollowingLive(true);
+      setHasUnseenLive(false);
     });
-  }, [displayBlocks.length, isLive, isOpen, query]);
+  }, []);
+
+  const handleTranscriptScroll = useCallback(() => {
+    if (!isLive || query.trim()) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const following = isNearBottom(el);
+    setIsFollowingLive(following);
+    if (following) setHasUnseenLive(false);
+  }, [isLive, query]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setIsFollowingLive(true);
+    setHasUnseenLive(false);
+  }, [isOpen, meeting.id, query]);
+
+  useEffect(() => {
+    if (!isOpen || !isLive || query.trim()) return;
+    if (!isFollowingLive) {
+      setHasUnseenLive(hasTranscriptContent);
+      return;
+    }
+    scrollToLatest(loaded ? "smooth" : "auto");
+  }, [
+    hasTranscriptContent,
+    isFollowingLive,
+    isLive,
+    isOpen,
+    latestBlockSignal,
+    loaded,
+    query,
+    scrollToLatest,
+  ]);
 
   // Empty state copy depends on *why* the list is empty — the difference
   // matters: "still recording" vs "no audio captured" vs "no matches".
@@ -539,6 +573,8 @@ export function TranscriptPanel({
   const compactEmptyState =
     Boolean(emptyCopy) && !loading && !hasTranscriptContent;
   const showSearch = displayBlocks.length > 0 || Boolean(query.trim());
+  const showFollowButton =
+    isLive && !query.trim() && hasTranscriptContent && !isFollowingLive;
 
   return (
     <>
@@ -559,32 +595,9 @@ export function TranscriptPanel({
           if (e.key === "Escape") onClose();
         }}
       >
-        <header className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-          <div className="flex items-baseline gap-2">
-            <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-            {liveLabel && (
-              <span
-                className={cn(
-                  "text-[11px] px-1.5 py-0.5 border",
-                  liveError
-                    ? "border-destructive/40 text-destructive"
-                    : liveStatus?.live_transcription_enabled
-                      ? "border-foreground text-foreground"
-                      : "border-border text-muted-foreground",
-                )}
-                title={liveError ? liveErrorSummary(liveError) : undefined}
-              >
-                {liveLabel}
-              </span>
-            )}
-            {displayBlocks.length > 0 && (
-              <span className="text-[11px] text-muted-foreground/70">
-                {filteredBlocks.length}
-                {query.trim() ? ` / ${displayBlocks.length}` : ""} segments
-              </span>
-            )}
-          </div>
+        <header className="flex items-center justify-end px-4 py-3 border-b border-border shrink-0">
           <div className="flex items-center gap-1">
+            {headerActions}
             <Button
               variant="ghost"
               size="sm"
@@ -623,42 +636,59 @@ export function TranscriptPanel({
           </div>
         )}
 
-        <div
-          ref={containerRef}
-          className="flex-1 overflow-y-auto"
-          style={{ contain: "layout paint" }}
-        >
-          {loading && !loaded && (
-            <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" />
-              loading transcript…
-            </div>
-          )}
+        <div className="relative min-h-0 flex-1">
+          <div
+            ref={containerRef}
+            className="h-full overflow-y-auto"
+            style={{ contain: "layout paint" }}
+            onScroll={handleTranscriptScroll}
+          >
+            {loading && !loaded && (
+              <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" />
+                loading transcript…
+              </div>
+            )}
 
-          {emptyCopy && (
-            <div
-              className={cn(
-                "flex items-center px-4 text-xs text-muted-foreground",
-                compactEmptyState
-                  ? "min-h-14 justify-start text-left"
-                  : "min-h-full justify-center py-8 text-center",
-              )}
+            {emptyCopy && (
+              <div
+                className={cn(
+                  "flex items-center px-4 text-xs text-muted-foreground",
+                  compactEmptyState
+                    ? "min-h-14 justify-start text-left"
+                    : "min-h-full justify-center py-8 text-center",
+                )}
+              >
+                <span>{emptyCopy}</span>
+              </div>
+            )}
+
+            {filteredBlocks.length > 0 && (
+              <ol className="divide-y divide-border/50 pb-8">
+                {filteredBlocks.map((b) => (
+                  <SpeakerParagraph
+                    key={b.key}
+                    block={b}
+                    onSpeakerAssigned={refetch}
+                  />
+                ))}
+              </ol>
+            )}
+          </div>
+          {showFollowButton && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => scrollToLatest()}
+              className="absolute bottom-3 right-3 h-8 w-8 rounded-full border border-border bg-background/95 p-0 shadow-lg backdrop-blur hover:bg-accent"
+              title="follow live transcript"
+              aria-label="follow live transcript"
             >
-              <span>{emptyCopy}</span>
-            </div>
-          )}
-
-          {filteredBlocks.length > 0 && (
-            <ol className="divide-y divide-border/50">
-              {filteredBlocks.map((b) => (
-                <SpeakerParagraph
-                  key={b.key}
-                  block={b}
-                  meetingStartMs={startMs}
-                  onSpeakerAssigned={refetch}
-                />
-              ))}
-            </ol>
+              <ArrowDown className="h-3.5 w-3.5" />
+              {hasUnseenLive && (
+                <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-foreground" />
+              )}
+            </Button>
           )}
         </div>
       </div>
@@ -668,11 +698,9 @@ export function TranscriptPanel({
 
 function SpeakerParagraph({
   block,
-  meetingStartMs,
   onSpeakerAssigned,
 }: {
   block: SpeakerBlock;
-  meetingStartMs: number;
   onSpeakerAssigned: () => void;
 }) {
   return (
@@ -707,16 +735,6 @@ function SpeakerParagraph({
             {block.speakerName}
           </span>
         )}
-        <span
-          className="text-[10px] text-muted-foreground/60 font-mono tabular-nums"
-          title={new Date(block.startMs).toLocaleString()}
-        >
-          {formatRelative(block.startMs, meetingStartMs)}
-          <span className="text-muted-foreground/40">
-            {" · "}
-            {formatClock(block.startMs)}
-          </span>
-        </span>
       </div>
       <p className="text-xs leading-relaxed text-foreground/90 whitespace-pre-wrap break-words">
         {block.text}

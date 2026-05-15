@@ -53,7 +53,6 @@ import { showChatWithPrefill } from "@/lib/chat-utils";
 import {
   formatClock,
   formatDuration,
-  formatTime,
   type MeetingRecord,
 } from "@/lib/utils/meeting-format";
 import {
@@ -151,7 +150,9 @@ export function NoteView({
   const [copying, setCopying] = useState(false);
   const [copied, setCopied] = useState(false);
   const [meetingCtx, setMeetingCtx] = useState<MeetingContext | null>(null);
-  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [transcriptOpen, setTranscriptOpenState] = useState(() =>
+    initialTranscriptOpen || readTranscriptOpenPreference(meeting.id),
+  );
   const [transcriptRefreshKey, setTranscriptRefreshKey] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -167,6 +168,16 @@ export function NoteView({
     attendees: meeting.attendees ?? "",
     note: meeting.note ?? "",
   });
+  const setTranscriptOpen = useCallback(
+    (value: React.SetStateAction<boolean>) => {
+      setTranscriptOpenState((current) => {
+        const next = typeof value === "function" ? value(current) : value;
+        writeTranscriptOpenPreference(meeting.id, next);
+        return next;
+      });
+    },
+    [meeting.id],
+  );
 
   // Reset draft when meeting changes
   useEffect(() => {
@@ -175,7 +186,9 @@ export function NoteView({
     setNote(meeting.note ?? "");
     setSaveState({ kind: "idle" });
     setMeetingCtx(null);
-    setTranscriptOpen(initialTranscriptOpen);
+    setTranscriptOpenState(
+      initialTranscriptOpen || readTranscriptOpenPreference(meeting.id),
+    );
     setTranscriptRefreshKey(0);
     setInactivityPrompt(false);
     setDismissedJoinUrl(null);
@@ -218,7 +231,7 @@ export function NoteView({
 
   useEffect(() => {
     if (initialTranscriptOpen) setTranscriptOpen(true);
-  }, [initialTranscriptOpen, transcriptOpenRequestKey]);
+  }, [initialTranscriptOpen, setTranscriptOpen, transcriptOpenRequestKey]);
 
   useEffect(() => {
     if (!isLive) return;
@@ -545,6 +558,15 @@ export function NoteView({
   const dockDuration = isLive
     ? formatElapsed(meeting.meeting_start, nowMs)
     : formatDuration(meeting.meeting_start, meeting.meeting_end);
+  const meetingDateLabel = formatDateOnly(meeting.meeting_start);
+  const meetingStartClock = formatClock(meeting.meeting_start);
+  const meetingEndClock = meeting.meeting_end
+    ? formatClock(meeting.meeting_end)
+    : null;
+  const meetingDurationLabel = formatDuration(
+    meeting.meeting_start,
+    meeting.meeting_end,
+  );
   const hasSaveStatus = saveState.kind !== "idle";
   const joinSuggestion = useMemo(() => {
     if (!isLive) return null;
@@ -697,13 +719,23 @@ export function NoteView({
 
           <div className="mt-5 flex flex-wrap items-center gap-2">
             <Pill icon={<Calendar className="h-3.5 w-3.5" />}>
-              {formatTime(meeting.meeting_start)}
+              {meetingDateLabel}
             </Pill>
             <Pill icon={<Clock className="h-3.5 w-3.5" />}>
-              {formatClock(meeting.meeting_start)}
-              {meeting.meeting_end && ` - ${formatClock(meeting.meeting_end)}`}
-              {" · "}
-              {formatDuration(meeting.meeting_start, meeting.meeting_end)}
+              <span className="text-foreground/80">{meetingStartClock}</span>
+              {isLive || !meetingEndClock ? (
+                <span className="inline-flex items-center gap-1 border border-foreground/15 bg-foreground/[0.03] px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+                  <span className="h-1.5 w-1.5 rounded-full bg-foreground animate-pulse" />
+                  ongoing
+                </span>
+              ) : (
+                <>
+                  <span className="text-muted-foreground/35">-</span>
+                  <span className="text-foreground/80">{meetingEndClock}</span>
+                  <span className="text-muted-foreground/35">·</span>
+                  <span>{meetingDurationLabel}</span>
+                </>
+              )}
             </Pill>
             <AttendeesPill
               value={attendees}
@@ -763,6 +795,15 @@ export function NoteView({
             onClose={() => setTranscriptOpen(false)}
             isLive={isLive}
             refreshKey={transcriptRefreshKey}
+            headerActions={
+              <AudioHealthButton
+                devices={audioStatusDevices}
+                isLive={isLive}
+                settings={settings}
+                englishOnly={englishOnly}
+                onLanguagePreference={setLanguagePreference}
+              />
+            }
           />
           <div className="flex min-h-14 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-3">
@@ -808,13 +849,6 @@ export function NoteView({
               >
                 <FileText className="h-3.5 w-3.5" />
               </Button>
-              <AudioHealthButton
-                devices={audioStatusDevices}
-                isLive={isLive}
-                settings={settings}
-                englishOnly={englishOnly}
-                onLanguagePreference={setLanguagePreference}
-              />
               {!isLive && (
                 <Button
                   variant="default"
@@ -933,7 +967,10 @@ function AudioHealthButton({
         <Button
           variant="ghost"
           size="sm"
-          className="relative h-9 w-9 rounded-none p-0"
+          className={cn(
+            "relative h-7 w-7 rounded-none p-0",
+            open && "invisible",
+          )}
           title="audio health"
           aria-label="audio health"
         >
@@ -946,7 +983,8 @@ function AudioHealthButton({
       <PopoverContent
         side="top"
         align="end"
-        className="w-72 p-0"
+        sideOffset={8}
+        className="w-72 overflow-hidden p-0 shadow-lg"
         onFocusOutside={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
@@ -1308,6 +1346,41 @@ function formatElapsed(startIso: string, nowMs: number): string {
   }
 
   return `${pad(minutes)}:${pad(seconds)}`;
+}
+
+function formatDateOnly(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function transcriptOpenPreferenceKey(meetingId: number): string {
+  return `screenpipe:meeting:${meetingId}:transcript-open`;
+}
+
+function readTranscriptOpenPreference(meetingId: number): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return (
+      window.sessionStorage.getItem(transcriptOpenPreferenceKey(meetingId)) ===
+      "true"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeTranscriptOpenPreference(meetingId: number, open: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(
+      transcriptOpenPreferenceKey(meetingId),
+      String(open),
+    );
+  } catch {
+    // Ignore storage failures; the button state still works in memory.
+  }
 }
 
 function hasJoinedMeetingLink(
