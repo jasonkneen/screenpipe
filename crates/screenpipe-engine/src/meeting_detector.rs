@@ -2238,6 +2238,7 @@ pub async fn run_meeting_detection_loop(
     mut shutdown_rx: broadcast::Receiver<()>,
     scan_interval: Option<Duration>,
     detector: Option<Arc<screenpipe_audio::meeting_detector::MeetingDetector>>,
+    close_orphaned_meetings_on_start: bool,
 ) {
     let profiles = load_detection_profiles();
     let scanner = Arc::new(MeetingUiScanner::new());
@@ -2252,11 +2253,33 @@ pub async fn run_meeting_detection_loop(
             || !p.app_identifiers.browser_title_patterns.is_empty()
     });
 
-    // Close any orphaned meetings from a prior crash
-    match db.close_orphaned_meetings().await {
-        Ok(0) => debug!("meeting v2: no orphaned meetings"),
-        Ok(n) => info!("meeting v2: closed {} orphaned meeting(s)", n),
-        Err(e) => warn!("meeting v2: failed to close orphaned meetings: {}", e),
+    if close_orphaned_meetings_on_start {
+        // Close any orphaned meetings from a prior crash.
+        match db.close_orphaned_meetings().await {
+            Ok(0) => debug!("meeting v2: no orphaned meetings"),
+            Ok(n) => info!("meeting v2: closed {} orphaned meeting(s)", n),
+            Err(e) => warn!("meeting v2: failed to close orphaned meetings: {}", e),
+        }
+    } else {
+        debug!("meeting v2: preserving active meetings across capture restart");
+    }
+
+    if let Ok(Some(meeting)) = db.get_most_recent_active_meeting().await {
+        let started_at = DateTime::parse_from_rfc3339(&meeting.meeting_start)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        info!(
+            "meeting v2: reattached active meeting on watcher start (id={}, app={})",
+            meeting.id, meeting.meeting_app
+        );
+        state = MeetingState::Active {
+            meeting_id: meeting.id,
+            app: meeting.meeting_app,
+            started_at,
+            last_seen: Instant::now(),
+            is_browser: false,
+        };
+        sync_meeting_flag(true, &in_meeting_flag, &detector);
     }
 
     // Calendar enrichment: subscribe to calendar events from the event bus.

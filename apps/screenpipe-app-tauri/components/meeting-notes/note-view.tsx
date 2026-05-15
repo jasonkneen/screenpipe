@@ -110,12 +110,21 @@ interface AudioStatusDevice {
   name: string;
   kind: "input" | "output";
   active: boolean;
+  level: number;
 }
 
 interface LiveStreamingStatus {
   active: boolean;
   meeting_id?: number | null;
   error?: string | null;
+}
+
+interface AudioHealthResponse {
+  device_status_details?: string;
+  audio_pipeline?: {
+    audio_level_rms?: number;
+    per_device_audio_level_rms?: Record<string, number>;
+  };
 }
 
 export function NoteView({
@@ -224,17 +233,21 @@ export function NoteView({
       try {
         const res = await localFetch("/health");
         if (!res.ok) return;
-        const health: { device_status_details?: string } = await res.json();
+        const health: AudioHealthResponse = await res.json();
         if (cancelled) return;
         setAudioStatusDevices(
-          parseAudioStatusDevices(health.device_status_details),
+          parseAudioStatusDevices(
+            health.device_status_details,
+            health.audio_pipeline?.per_device_audio_level_rms,
+            health.audio_pipeline?.audio_level_rms,
+          ),
         );
       } catch {
         // Keep the popover usable from settings even if /health is unavailable.
       }
     };
     void load();
-    const handle = window.setInterval(load, isLive ? 5000 : 15000);
+    const handle = window.setInterval(load, isLive ? 1000 : 15000);
     return () => {
       cancelled = true;
       window.clearInterval(handle);
@@ -901,6 +914,8 @@ function AudioHealthButton({
     settings.meetingLiveTranscriptionProvider !== "disabled";
   const inputActive = inputs.some((device) => device.active);
   const outputActive = outputs.some((device) => device.active);
+  const inputLevel = maxAudioDeviceLevel(inputs);
+  const outputLevel = maxAudioDeviceLevel(outputs);
   const [open, setOpen] = useState(false);
   const anyAudioActive = isLive && (inputActive || outputActive);
 
@@ -918,10 +933,7 @@ function AudioHealthButton({
         <Button
           variant="ghost"
           size="sm"
-          className={cn(
-            "relative h-9 w-9 rounded-none p-0 transition-opacity",
-            open && "opacity-0",
-          )}
+          className="relative h-9 w-9 rounded-none p-0"
           title="audio health"
           aria-label="audio health"
         >
@@ -931,7 +943,13 @@ function AudioHealthButton({
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 p-0">
+      <PopoverContent
+        side="top"
+        align="end"
+        className="w-72 p-0"
+        onFocusOutside={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => event.preventDefault()}
+      >
         <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
           <div className="flex items-center gap-2 text-sm font-medium">
             <span className="relative flex h-7 w-7 items-center justify-center border border-border bg-background">
@@ -966,6 +984,7 @@ function AudioHealthButton({
             active={
               isLive && !audioDisabled && (inputActive || inputs.length === 0)
             }
+            level={inputLevel}
           />
           <AudioDeviceRow
             icon={<Volume2 className="h-3.5 w-3.5" />}
@@ -979,17 +998,19 @@ function AudioHealthButton({
             active={
               isLive && !audioDisabled && (outputActive || outputs.length === 0)
             }
+            level={outputLevel}
           />
 
           <div className="mt-3 grid grid-cols-[72px_1fr] gap-x-3 gap-y-1.5 text-[11px] leading-tight">
             <span className="text-muted-foreground">live notes</span>
             <span className="truncate">
               {liveEnabled
-                ? providerLabel(settings.meetingLiveTranscriptionProvider)
+                ? providerLabel(
+                    settings.meetingLiveTranscriptionProvider,
+                    settings.audioTranscriptionEngine,
+                  )
                 : "off"}
             </span>
-            <span className="text-muted-foreground">background</span>
-            <span>{audioDisabled ? "audio off" : "recording audio"}</span>
           </div>
         </div>
 
@@ -1028,14 +1049,6 @@ function AudioHealthButton({
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={openRecordingSettings}
-          className="flex w-full items-center justify-between border-t border-border px-3 py-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        >
-          <span>troubleshoot transcription issues</span>
-          <ExternalLink className="h-3 w-3" />
-        </button>
       </PopoverContent>
     </Popover>
   );
@@ -1133,11 +1146,13 @@ function AudioDeviceRow({
   label,
   value,
   active,
+  level,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   active: boolean;
+  level: number;
 }) {
   return (
     <div className="mb-3 last:mb-0">
@@ -1148,38 +1163,47 @@ function AudioDeviceRow({
           {value}
         </span>
       </div>
-      <AudioLevelBars active={active} />
+      <AudioLevelBars active={active} level={level} />
     </div>
   );
 }
 
-function AudioLevelBars({ active }: { active: boolean }) {
+function AudioLevelBars({
+  active,
+  level,
+}: {
+  active: boolean;
+  level: number;
+}) {
+  const meterValue = active ? audioLevelToMeterValue(level) : 0;
+  const bars = [0.45, 0.72, 1, 0.72, 0.45];
+
   return (
     <div
       className={cn(
-        "flex h-3 items-end gap-1.5",
+        "flex h-2.5 items-end gap-1",
         active ? "text-foreground" : "text-muted-foreground/25",
       )}
       aria-hidden
     >
-      {[0, 1, 2, 3, 4, 5, 6, 7].map((index) => (
-        <span
-          key={index}
-          data-active={active ? "true" : "false"}
-          className={cn(
-            "meeting-audio-level-bar h-full w-1 rounded-full bg-current transition-colors",
-          )}
-          style={
-            {
-              "--meter-duration": `${720 + index * 55}ms`,
-              "--meter-delay": `${index * 80}ms`,
-              transform: active
-                ? undefined
-                : `scaleY(${0.18 + (index % 3) * 0.08})`,
-            } as React.CSSProperties
-          }
-        />
-      ))}
+      {bars.map((weight, index) => {
+        const scale = active ? 0.14 + meterValue * weight * 0.86 : 0.12;
+        return (
+          <span
+            key={index}
+            data-active={active ? "true" : "false"}
+            className={cn(
+              "meeting-audio-level-bar h-full w-0.5 rounded-full bg-current transition-all duration-150 ease-out",
+            )}
+            style={
+              {
+                opacity: active ? 0.45 + meterValue * 0.55 : 0.35,
+                transform: `scaleY(${scale})`,
+              } as React.CSSProperties
+            }
+          />
+        );
+      })}
     </div>
   );
 }
@@ -1331,6 +1355,8 @@ function providerNeedles(link: CalendarMeetingLink): string[] {
 
 function parseAudioStatusDevices(
   details: string | undefined,
+  perDeviceLevels: Record<string, number> | undefined,
+  fallbackLevel: number | undefined,
 ): AudioStatusDevice[] {
   if (!details) return [];
   const devices: AudioStatusDevice[] = [];
@@ -1344,9 +1370,55 @@ function parseAudioStatusDevices(
       name,
       kind,
       active: status.toLowerCase().startsWith("active"),
+      level: audioDeviceLevelFor(
+        nameAndType,
+        name,
+        perDeviceLevels,
+        fallbackLevel,
+      ),
     });
   }
   return devices;
+}
+
+function audioDeviceLevelFor(
+  rawName: string,
+  displayName: string,
+  perDeviceLevels: Record<string, number> | undefined,
+  fallbackLevel: number | undefined,
+): number {
+  const rawKey = normalizeAudioDeviceKey(rawName);
+  const displayKey = normalizeAudioDeviceKey(displayName);
+  const levelEntries = Object.entries(perDeviceLevels ?? {});
+
+  for (const [key, value] of levelEntries) {
+    const normalizedKey = normalizeAudioDeviceKey(key);
+    if (normalizedKey === rawKey || normalizedKey === displayKey) {
+      return sanitizeAudioLevel(value);
+    }
+  }
+
+  if (levelEntries.length > 0) return 0;
+  return sanitizeAudioLevel(fallbackLevel);
+}
+
+function normalizeAudioDeviceKey(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function sanitizeAudioLevel(value: unknown): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return numeric;
+}
+
+function maxAudioDeviceLevel(devices: AudioStatusDevice[]): number {
+  return devices.reduce((max, device) => Math.max(max, device.level), 0);
+}
+
+function audioLevelToMeterValue(level: number): number {
+  if (!Number.isFinite(level) || level <= 0) return 0;
+  return Math.min(1, Math.pow(Math.min(level * 120, 1), 0.7));
 }
 
 function audioDeviceLabel({
@@ -1367,10 +1439,13 @@ function audioDeviceLabel({
   return useSystemDefault ? fallback : "none selected";
 }
 
-function providerLabel(provider: Settings["meetingLiveTranscriptionProvider"]) {
+function providerLabel(
+  provider: Settings["meetingLiveTranscriptionProvider"],
+  selectedEngine: string,
+) {
   switch (provider) {
     case "selected-engine":
-      return "current engine";
+      return transcriptionEngineLabel(selectedEngine);
     case "deepgram-live":
       return "deepgram live";
     case "openai-realtime":
@@ -1378,5 +1453,24 @@ function providerLabel(provider: Settings["meetingLiveTranscriptionProvider"]) {
     case "screenpipe-cloud":
     default:
       return "screenpipe cloud";
+  }
+}
+
+function transcriptionEngineLabel(engine: string) {
+  switch (engine) {
+    case "screenpipe-cloud":
+      return "screenpipe cloud";
+    case "deepgram":
+      return "deepgram";
+    case "whisper-large-v3-turbo":
+      return "whisper turbo";
+    case "whisper-large-v3-turbo-quantized":
+      return "whisper turbo fast";
+    case "openai-compatible":
+      return "openai compatible";
+    case "disabled":
+      return "off";
+    default:
+      return engine.replace(/-/g, " ");
   }
 }

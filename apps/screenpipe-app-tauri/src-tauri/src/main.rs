@@ -895,6 +895,7 @@ async fn main() {
         is_starting: Arc::new(AtomicBool::new(false)),
         is_starting_capture: Arc::new(AtomicBool::new(false)),
         last_spawn_epoch: Arc::new(AtomicU64::new(0)),
+        interrupted_meeting: Arc::new(tokio::sync::Mutex::new(None)),
     };
     let pi_state = pi::PiState(Arc::new(tokio::sync::Mutex::new(pi::PiPool::new())));
     let suggestions_state = suggestions::SuggestionsState::new();
@@ -1777,7 +1778,7 @@ async fn main() {
                             };
 
                             // Phase 2: Start capture session
-                            let capture = match capture_session::CaptureSession::start(&server, &config).await {
+                            let capture = match capture_session::CaptureSession::start(&server, &config, true).await {
                                 Ok(c) => c,
                                 Err(e) => {
                                     error!("Failed to start capture: {}", e);

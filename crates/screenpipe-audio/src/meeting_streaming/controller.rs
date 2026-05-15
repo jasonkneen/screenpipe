@@ -82,6 +82,29 @@ pub fn start_meeting_streaming_loop(
             config.provider.as_str()
         );
 
+        match db.get_most_recent_active_meeting().await {
+            Ok(Some(meeting)) => {
+                info!(
+                    "meeting streaming: reattaching active meeting on coordinator start (meeting_id={})",
+                    meeting.id
+                );
+                start_streaming_session(
+                    &config,
+                    &audio_tap,
+                    &transcription_engine,
+                    &mut active,
+                    meeting.id,
+                    Some(meeting.meeting_app),
+                    meeting.title,
+                )
+                .await;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!("meeting streaming: failed to check active meeting on start: {}", err);
+            }
+        }
+
         loop {
             tokio::select! {
                 Some(event) = started_sub.next() => {
@@ -95,55 +118,16 @@ pub fn start_meeting_streaming_loop(
                         continue;
                     }
 
-                    if let Some(previous) = active.take() {
-                        emit_session_ended(previous);
-                    }
-
-                    let readiness_error = readiness_error(&config, &transcription_engine).await;
-                    let live_transcription_enabled =
-                        config.provider.supports_live_transcription() && readiness_error.is_none();
-                    let provider = config.provider.as_str().to_string();
-                    audio_tap.set_active(live_transcription_enabled);
-                    audio_tap.set_background_suppressed(false);
-                    active = Some(ActiveMeetingStream {
+                    start_streaming_session(
+                        &config,
+                        &audio_tap,
+                        &transcription_engine,
+                        &mut active,
                         meeting_id,
-                        provider: provider.clone(),
-                        live_transcription_enabled,
-                        started_at: Instant::now(),
-                        audio_frames_seen: 0,
-                        audio_samples_seen: 0,
-                        last_audio_activity_at: Instant::now(),
-                        device_senders: HashMap::new(),
-                        device_retry_after: HashMap::new(),
-                    });
-
-                    let started = MeetingStreamingSessionStarted {
-                        meeting_id,
-                        app: event.data.app.clone(),
-                        title: event.data.display_title().map(str::to_string),
-                        provider: provider.clone(),
-                        model: config.model.clone(),
-                        live_transcription_enabled,
-                        started_at: Utc::now(),
-                    };
-
-                    info!(
-                        "meeting streaming: session started (meeting_id={}, provider={}, live={})",
-                        meeting_id,
-                        provider,
-                        live_transcription_enabled
-                    );
-                    if let Some(error) = readiness_error.clone() {
-                        emit_error(meeting_id, &provider, config.model.clone(), None, error.clone());
-                    }
-                    emit_status(
-                        true,
-                        Some(meeting_id),
-                        &provider,
-                        live_transcription_enabled,
-                        readiness_error,
-                    );
-                    let _ = screenpipe_events::send_event("meeting_streaming_session_started", started);
+                        event.data.app.clone(),
+                        event.data.display_title().map(str::to_string),
+                    )
+                    .await;
                 }
                 Some(event) = ended_sub.next() => {
                     let Some(meeting_id) = event.data.resolved_meeting_id() else {
@@ -250,6 +234,64 @@ pub fn start_meeting_streaming_loop(
             }
         }
     })
+}
+
+async fn start_streaming_session(
+    config: &MeetingStreamingConfig,
+    audio_tap: &MeetingAudioTap,
+    transcription_engine: &Arc<RwLock<Option<TranscriptionEngine>>>,
+    active: &mut Option<ActiveMeetingStream>,
+    meeting_id: i64,
+    app: Option<String>,
+    title: Option<String>,
+) {
+    if let Some(previous) = active.take() {
+        emit_session_ended(previous);
+    }
+
+    let readiness_error = readiness_error(config, transcription_engine).await;
+    let live_transcription_enabled =
+        config.provider.supports_live_transcription() && readiness_error.is_none();
+    let provider = config.provider.as_str().to_string();
+    audio_tap.set_active(live_transcription_enabled);
+    audio_tap.set_background_suppressed(false);
+    *active = Some(ActiveMeetingStream {
+        meeting_id,
+        provider: provider.clone(),
+        live_transcription_enabled,
+        started_at: Instant::now(),
+        audio_frames_seen: 0,
+        audio_samples_seen: 0,
+        last_audio_activity_at: Instant::now(),
+        device_senders: HashMap::new(),
+        device_retry_after: HashMap::new(),
+    });
+
+    let started = MeetingStreamingSessionStarted {
+        meeting_id,
+        app,
+        title,
+        provider: provider.clone(),
+        model: config.model.clone(),
+        live_transcription_enabled,
+        started_at: Utc::now(),
+    };
+
+    info!(
+        "meeting streaming: session started (meeting_id={}, provider={}, live={})",
+        meeting_id, provider, live_transcription_enabled
+    );
+    if let Some(error) = readiness_error.clone() {
+        emit_error(meeting_id, &provider, config.model.clone(), None, error.clone());
+    }
+    emit_status(
+        true,
+        Some(meeting_id),
+        &provider,
+        live_transcription_enabled,
+        readiness_error,
+    );
+    let _ = screenpipe_events::send_event("meeting_streaming_session_started", started);
 }
 
 async fn persist_live_final_with_retry(db: Arc<DatabaseManager>, event: MeetingTranscriptFinal) {

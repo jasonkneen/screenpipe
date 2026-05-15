@@ -526,29 +526,8 @@
     }
   }
 
-  @keyframes meeting-audio-level {
-    0%,
-    100% {
-      transform: scaleY(0.28);
-      opacity: 0.55;
-    }
-    45% {
-      transform: scaleY(1);
-      opacity: 1;
-    }
-    70% {
-      transform: scaleY(0.48);
-      opacity: 0.75;
-    }
-  }
-
   .meeting-audio-level-bar {
     transform-origin: bottom;
-  }
-
-  .meeting-audio-level-bar[data-active="true"] {
-    animation: meeting-audio-level var(--meter-duration, 800ms) ease-in-out
-      var(--meter-delay, 0ms) infinite;
   }
 
   .animate-shimmer {
