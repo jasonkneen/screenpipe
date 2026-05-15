@@ -29,7 +29,6 @@ import { PipeAIIconLarge } from "@/components/pipe-ai-icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { MemoizedReactMarkdown } from "@/components/markdown";
 import { VideoComponent } from "@/components/rewind/video";
-import { MermaidDiagram } from "@/components/rewind/mermaid-diagram";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { AIPresetsSelector } from "@/components/rewind/ai-presets-selector";
 import { AIPreset, PiQueuedPrompt } from "@/lib/utils/tauri";
@@ -79,6 +78,26 @@ import {
   normalizeQueueEventPayload,
   queuedPreviewMatchesText,
 } from "@/lib/chat-queue-controls";
+
+const MermaidDiagram = React.lazy(() =>
+  import("@/components/rewind/mermaid-diagram").then((mod) => ({
+    default: mod.MermaidDiagram,
+  }))
+);
+
+function MermaidDiagramBlock({ chart }: { chart: string }) {
+  return (
+    <React.Suspense
+      fallback={
+        <div className="my-4 text-xs text-muted-foreground">
+          rendering diagram...
+        </div>
+      }
+    >
+      <MermaidDiagram chart={chart} />
+    </React.Suspense>
+  );
+}
 // Session ID is per-conversation — set on mount (new conv) and updated on load/new.
 // Stored as a ref so event listeners always see the current value without stale closures.
 
@@ -1334,7 +1353,7 @@ function MarkdownBlock({ text, isUser }: { text: string; isUser: boolean }) {
           const isCodeBlock = className?.includes("language-");
 
           if (language === "mermaid") {
-            return <MermaidDiagram chart={content} />;
+            return <MermaidDiagramBlock chart={content} />;
           }
 
           if (language === "app-stats") {
