@@ -274,8 +274,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: |
-            ~\AppData\Local\cargo\
-            target\
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Set up Rust
@@ -285,6 +288,24 @@ jobs:
           override: true
           cache: true
           rustflags: ""
+
+      - name: Verify Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+          cargo_output="$(cargo --version 2>&1 || true)"
+          if [[ "$cargo_output" == *"rustup-init"* || "$cargo_output" != cargo* ]]; then
+            curl --proto '=https' --tlsv1.2 --retry 5 --retry-connrefused -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            . "$HOME/.cargo/env"
+          fi
+
+          rustup default stable
+          rustup override set stable
+          cargo --version
+          rustc --version
 
       - name: setup Bun
         uses: oven-sh/setup-bun@v2
