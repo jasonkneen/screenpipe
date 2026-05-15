@@ -2991,7 +2991,7 @@ export function StandaloneChat({
       return;
     }
 
-    if (isComposerSteerShortcut(e) && !showMentionDropdown) {
+    if (isComposerSteerShortcut(e, isMac) && !showMentionDropdown) {
       e.preventDefault();
       if (input.trim() || pastedImages.length > 0) {
         steerMessage(input.trim());
@@ -5038,13 +5038,6 @@ export function StandaloneChat({
       from_queue: !!imageDataUrls,
     });
 
-    if (hadActiveReply) {
-      toast({
-        title: "steering current reply",
-        description: "Stopping the current reply and running this now.",
-      });
-    }
-
     return sendPiMessage(trimmed, displayLabel, imageDataUrls);
   }
 
@@ -6270,7 +6263,7 @@ export function StandaloneChat({
                           role="listitem"
                           onKeyDown={(e) => {
                             if (isBusy) return;
-                            if (isQueuedItemSteerShortcut(e)) {
+                            if (isQueuedItemSteerShortcut(e, isMac)) {
                               e.preventDefault();
                               steerQueuedPrompt(p);
                             } else if (isQueuedItemCancelShortcut(e)) {

@@ -34,18 +34,23 @@ describe("chat queue controls", () => {
   });
 
   it("uses a deliberate modifier shortcut for composer steering", () => {
-    expect(isComposerSteerShortcut({ key: "Enter", metaKey: true })).toBe(true);
-    expect(isComposerSteerShortcut({ key: "Enter", ctrlKey: true })).toBe(true);
-    expect(isComposerSteerShortcut({ key: "Enter" })).toBe(false);
-    expect(isComposerSteerShortcut({ key: "Enter", metaKey: true, shiftKey: true })).toBe(false);
-    expect(isComposerSteerShortcut({ key: "Enter", metaKey: true, altKey: true })).toBe(false);
+    expect(isComposerSteerShortcut({ key: "Enter", metaKey: true }, true)).toBe(true);
+    expect(isComposerSteerShortcut({ key: "Enter", ctrlKey: true }, true)).toBe(false);
+    expect(isComposerSteerShortcut({ key: "Enter", ctrlKey: true }, false)).toBe(true);
+    expect(isComposerSteerShortcut({ key: "Enter", metaKey: true }, false)).toBe(false);
+    expect(isComposerSteerShortcut({ key: "Enter" }, false)).toBe(false);
+    expect(isComposerSteerShortcut({ key: "Enter", metaKey: true, shiftKey: true }, true)).toBe(false);
+    expect(isComposerSteerShortcut({ key: "Enter", metaKey: true, altKey: true }, true)).toBe(false);
   });
 
   it("supports focused queued-item steering and cancellation shortcuts", () => {
-    expect(isQueuedItemSteerShortcut({ key: "s" })).toBe(true);
-    expect(isQueuedItemSteerShortcut({ key: "S" })).toBe(true);
-    expect(isQueuedItemSteerShortcut({ key: "s", metaKey: true })).toBe(false);
-    expect(isQueuedItemSteerShortcut({ key: "Enter", ctrlKey: true })).toBe(true);
+    expect(isQueuedItemSteerShortcut({ key: "s" }, true)).toBe(true);
+    expect(isQueuedItemSteerShortcut({ key: "S" }, false)).toBe(true);
+    expect(isQueuedItemSteerShortcut({ key: "s", metaKey: true }, true)).toBe(false);
+    expect(isQueuedItemSteerShortcut({ key: "Enter", metaKey: true }, true)).toBe(true);
+    expect(isQueuedItemSteerShortcut({ key: "Enter", ctrlKey: true }, true)).toBe(false);
+    expect(isQueuedItemSteerShortcut({ key: "Enter", ctrlKey: true }, false)).toBe(true);
+    expect(isQueuedItemSteerShortcut({ key: "Enter", metaKey: true }, false)).toBe(false);
 
     expect(isQueuedItemCancelShortcut({ key: "Delete" })).toBe(true);
     expect(isQueuedItemCancelShortcut({ key: "Backspace" })).toBe(true);

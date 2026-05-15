@@ -32,17 +32,21 @@ export function normalizeQueueEventPayload<TQueued>(
   };
 }
 
-export function isComposerSteerShortcut(event: KeyLike): boolean {
+export function isComposerSteerShortcut(event: KeyLike, isMac: boolean): boolean {
+  const hasPlatformModifier = isMac
+    ? Boolean(event.metaKey && !event.ctrlKey)
+    : Boolean(event.ctrlKey && !event.metaKey);
+
   return (
     event.key === "Enter" &&
     !event.shiftKey &&
     !event.altKey &&
-    Boolean(event.metaKey || event.ctrlKey)
+    hasPlatformModifier
   );
 }
 
-export function isQueuedItemSteerShortcut(event: KeyLike): boolean {
-  if (isComposerSteerShortcut(event)) return true;
+export function isQueuedItemSteerShortcut(event: KeyLike, isMac: boolean): boolean {
+  if (isComposerSteerShortcut(event, isMac)) return true;
   return (
     event.key.toLowerCase() === "s" &&
     !event.metaKey &&
