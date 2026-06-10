@@ -1,11 +1,11 @@
 ---
 name: screenpipe-api
-description: Query the user's screen recordings, audio, UI elements, and usage analytics via the local Screenpipe REST API at localhost:3030. Use when the user asks about their screen activity, meetings, apps, productivity, media export, retranscription, or connected services.
+description: Query the user's data via the local screenpipe REST API at localhost:3030 — screen recordings, audio, UI elements, usage analytics, and the user's persistent memory store. Use when the user asks about their screen activity, meetings, apps, productivity, media export, retranscription, connected services, OR when they ask to save / remember / store / note information so it can be retrieved later (POST /memories — survives across sessions and is queryable by Claude/external agents via the same API).
 ---
 
 # Screenpipe API
 
-Local REST API at `http://localhost:3030`. Full reference (60+ endpoints): https://docs.screenpi.pe/llms-full.txt
+Local REST API at `http://localhost:3030`. 
 
 ## Authentication
 
@@ -15,7 +15,7 @@ Local REST API at `http://localhost:3030`. Full reference (60+ endpoints): https
 curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/..."
 ```
 
-The `$SCREENPIPE_LOCAL_API_KEY` env var is already set in your environment. Without it you get 403. The only exception is `/health` (no auth needed).
+The `$SCREENPIPE_LOCAL_API_KEY` env var is already set in your environment. Without it you get 403. Endpoints that skip auth: `/health`, `/ws/health`, `/audio/device/status`, `/connections/oauth/callback`, `/frames/*`, `/notify`, `/pipes/store/*`.
 
 ## Context Window Protection
 
@@ -23,7 +23,23 @@ API responses can be large. Always write curl output to a file first (`curl ... 
 
 ---
 
-## 1. Search — `GET /search`
+## 1. Activity Summary — `GET /activity-summary`
+
+Default broad-context call. Bundles apps, windows, key_texts, audio, edited_files, recording health, top memories, deduped screen+audio snippets, and a `data_status` + `query_status` + `guidance` triple.
+
+```bash
+curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/activity-summary?start_time=30m%20ago&end_time=now"
+```
+
+Required: `start_time`, `end_time`. Optional: `app_name`, `q` (filters memories+snippets, drives `query_status`), `include_recording|memories|snippets|guidance=false` (each defaults true — disable to slim), `max_snippets` (8/12), `max_snippet_chars` (500/1200), `max_memories` (5/20).
+
+`data_status` ∈ `ok|empty_but_recording|no_capture_in_range|not_recording`. Check before claiming "no activity". `query_status` ∈ `not_requested|matched|no_query_matches`. `guidance.next_best_query` is a ready-to-show hint when empty. Escalate to `/search` only for verbatim quotes / frame_ids.
+
+---
+
+## 2. Search — `GET /search`
+
+Use when `/activity-summary` says `ok` but you need verbatim quotes, media paths, frame IDs, or a specific content match.
 
 ```bash
 curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/search?q=QUERY&content_type=all&limit=10&start_time=1h%20ago"
@@ -34,8 +50,8 @@ curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `q` | string | No | Keywords. Do NOT use for audio searches — transcriptions are noisy, q filters too aggressively. |
-| `content_type` | string | No | `all` (default), `accessibility`, `audio`, `input`, `ocr`, `memory`. Screen text is primarily captured via the OS accessibility tree (`accessibility`); OCR is a fallback for apps without accessibility support (games, remote desktops). Use `all` unless you need a specific modality. |
-| `limit` | integer | No | Max 1-20. Default: 10 |
+| `content_type` | string | No | `all` (default), `accessibility`, `audio`, `input`, `ocr`, `memory`. Screen text is primarily captured via the OS accessibility tree (`accessibility`); OCR is a fallback for apps without accessibility support (videos, games, remote desktops). Use `all` unless you need a specific modality. |
+| `limit` | integer | No | Default: 20. Keep small (≤20) to protect context. |
 | `offset` | integer | No | Pagination. Default: 0 |
 | `start_time` | ISO 8601 or relative | **Yes** | Accepts `2024-01-15T10:00:00Z` or `16h ago`, `2d ago`, `30m ago` |
 | `end_time` | ISO 8601 or relative | No | Defaults to now. Accepts `now`, `1h ago` |
@@ -46,26 +62,6 @@ curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030
 | `tags` | string | No | Comma-separated; return only items carrying ALL of them (e.g. `person:ada,project:atlas`). Works for screen/audio and, with `content_type=memory`, memories. See Tags below. |
 | `max_content_length` | integer | No | Truncate each result's text (middle-truncation) |
 
-### Progressive Disclosure
-
-Don't jump to heavy `/search` calls. Escalate:
-
-| Step | Endpoint | When |
-|------|----------|------|
-| 0 | `GET /memories?q=...` | **Always query first/in parallel** — highest signal, lowest cost |
-| 1 | `GET /activity-summary?start_time=...&end_time=...` | Broad questions ("what was I doing?", "which apps?") |
-| 2 | `GET /search?...` | Need specific content |
-| 3 | `GET /elements?...` or `GET /frames/{id}/context` | UI structure, buttons, links |
-| 4 | `GET /frames/{frame_id}` (PNG) | Visual context needed |
-
-Decision tree:
-- "What was I doing?" → Step 1 only
-- "Summarize my meeting" → Step 2 with `content_type=audio`, NO q param. Add `content_type=all` for screen context.
-- "How long on X?" → Step 1 (`/activity-summary` → `total_active_minutes` for the whole range, plus per-app/window `minutes`)
-- "Which apps today?" → Step 1 (do NOT use frame counts or raw SQLite)
-- "What button did I click?" → Step 3 (`/elements` with role=AXButton)
-- "Show me what I saw" → Step 2 (find frame_id) → Step 4
-
 ### Tags — linking people, projects, topics
 
 Tags are a shared label layer across screen, audio, and memories under one string namespace. Use namespaced tags: `person:ada`, `project:atlas`, `topic:pricing`. Two items sharing a tag are connected.
@@ -74,16 +70,15 @@ Tags are a shared label layer across screen, audio, and memories under one strin
 - Add to a memory: include `tags` in `POST /memories` (or `PUT /memories/{id}`).
 - Retrieve by tag: `GET /search?tags=person:ada&start_time=30d%20ago` (screen+audio), or add `content_type=memory` for memories. Multiple tags AND together; matching is exact, not substring.
 
-Frames are pruned by retention, so for a durable link tag a memory (memories also carry `created_at` and a `frame_id` back to the moment). To pull everything about a person across time: one call for captures (`content_type=all&tags=person:ada`) plus one for facts (`content_type=memory&tags=person:ada`).
+Frames are pruned by retention, so for a durable link tag a memory (memories also carry `created_at` and a `frame_id` back to the moment). Tag frames/audio for short-term recall. To pull everything about a person across time: one call for captures (`content_type=all&tags=person:ada`) plus one for facts (`content_type=memory&tags=person:ada`).
 
 ### Critical Rules
 
 1. **ALWAYS include `start_time`** — queries without time bounds WILL timeout
-2. **Start with 1-2 hour ranges** — expand only if no results
-3. **Use `app_name`** when user mentions a specific app
-4. **Keep `limit` low** (5-10) initially
-5. **"recent"** = 30 min. **"today"** = since midnight. **"yesterday"** = yesterday's range
-6. If timeout, narrow the time range
+2. **Use `app_name`** when user mentions a specific app (this is string contains)
+3. **"recent"** = 30 min. **"today"** = since midnight. **"yesterday"** = yesterday's range
+4. If `/search` is empty, fall back to `/activity-summary` and check `data_status` before saying "no data"
+5. If timeout, narrow the time range
 
 ### Response Format
 
@@ -92,32 +87,11 @@ Frames are pruned by retention, so for a durable link tag a memory (memories als
   "data": [
     {"type": "OCR", "content": {"frame_id": 12345, "text": "...", "timestamp": "...", "app_name": "Chrome", "window_name": "..."}},
     {"type": "Audio", "content": {"chunk_id": 678, "transcription": "...", "timestamp": "...", "speaker": {"name": "John"}}},
-    {"type": "UI", "content": {"id": 999, "text": "Clicked 'Submit'", "timestamp": "...", "app_name": "Safari"}}
+    {"type": "Input", "content": {"id": 999, "text": "Clicked 'Submit'", "timestamp": "...", "app_name": "Safari"}}
   ],
   "pagination": {"limit": 10, "offset": 0, "total": 42}
 }
 ```
-
-> **Note**: The `"OCR"` type label is used for all screen text results, including text captured via the accessibility tree. Most screen text comes from accessibility, not OCR.
-
----
-
-## 2. Activity Summary — `GET /activity-summary`
-
-```bash
-curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/activity-summary?start_time=1h%20ago&end_time=now"
-```
-
-Returns a rich overview with:
-- **total_active_minutes**: authoritative total active screen time for the whole range (every app, idle gaps excluded). Use this as the grand total / denominator. Do NOT sum `windows[].minutes` (capped at 30) and do NOT open `db.sqlite` to recompute durations — this field already is the answer.
-- **apps**: per-app `minutes` (active time), first/last seen
-- **windows**: every distinct window/tab with title, `browser_url`, and `minutes` spent — the most valuable field for *what* the user worked on (top 30 by time)
-- **key_texts**: one representative text snippet per window context (user input fields prioritized over static page text)
-- **audio_summary.top_transcriptions**: actual transcription text with speaker and timestamp (not just counts)
-
-This is usually enough to answer "what was I doing?" without further searches. Only drill into `/search` if you need verbatim quotes or specific content.
-
-> **Building a pipe/automation?** Same rule: call this endpoint for time math. The numbers are computed server-side from frame timestamps — never recompute durations from raw frames, and never ask an LLM to sum minutes (it will drift). Let the model label activities; let this endpoint own the durations.
 
 ---
 
@@ -209,7 +183,7 @@ curl -X POST http://localhost:3030/audio/retranscribe \
   -d '{"start": "1h ago", "end": "now"}'
 ```
 
-Optional: `engine` (`whisper-large-v3-turbo`|`whisper-large-v3`|`deepgram`|`qwen3-asr`), `vocabulary` (array of `{"word": "...", "replacement": "..."}` for bias/replacement), `prompt` (topic context for Whisper).
+Optional: `engine` (one of `deepgram`, `screenpipe-cloud`, `whisper-large`, `whisper-large-v3-turbo`, `whisper-large-v3-turbo-quantized`, `qwen3-asr`, `parakeet`, `parakeet-mlx`, `openai-compatible`), `vocabulary` (array of `{"word": "...", "replacement": "..."}` for bias/replacement), `prompt` (topic context for Whisper).
 
 Keep ranges short (1h max). Show old vs new transcription.
 
@@ -314,6 +288,75 @@ curl -X POST http://localhost:3030/connections/<id>/proxy/<upstream-api-path> \
 Do **not** call `https://api.github.com/...` directly from a pipe — use `/connections/github/proxy/...` instead. There is no `/connections/<id>/token` endpoint.
 
 If not connected, tell user to set up in Settings > Connections.
+
+Each entry's `description` field is self-describing — for capabilities that
+need a control surface (browsers, gateways, OAuth proxies, etc.), the description includes
+the exact endpoint and body shape. Read it before guessing.
+
+### Calendar Connections
+
+Use calendar-specific endpoints when the user asks about appointments,
+meetings, or upcoming events:
+
+```bash
+# Native Apple/Windows Calendar
+curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+  "http://localhost:3030/connections/calendar/events?hours_back=0&hours_ahead=72"
+
+# Google Calendar
+curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+  "http://localhost:3030/connections/google-calendar/events?hours_back=0&hours_ahead=72"
+
+# ICS/webcal subscriptions
+curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+  "http://localhost:3030/connections/ics-calendar/events?hours_back=0&hours_ahead=72"
+```
+
+If `/connections` shows `ics-calendar.connected: true`, include ICS results
+alongside native and Google Calendar results before saying the calendar is empty.
+
+### Browser Control — `owned-default`
+
+You have an embedded browser you can drive directly, for the user it will displayed inside the chat. Three intent verbs;
+reach for `/eval` only when the first two aren't enough.
+
+```bash
+# 1. Navigate — opens the URL in the embedded browser sidebar.
+curl -X POST -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://en.wikipedia.org/wiki/Giraffe"}' \
+  http://localhost:3030/connections/browsers/owned-default/navigate
+# → {"ok": true, "url": "<final-url-after-redirects>"}
+
+# 2. Snapshot — read the page WITHOUT writing JS. Returns title, url, and
+#    a compact accessibility-style outline (headings, links, buttons,
+#    form fields). This is almost always what you want for "what's on
+#    the page?" / "is this still loading?" / "what links are visible?".
+curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+  http://localhost:3030/connections/browsers/owned-default/snapshot
+# → {
+#     "title": "Giraffe - Wikipedia",
+#     "url": "https://en.wikipedia.org/wiki/Giraffe",
+#     "tree": "[h1] Giraffe\n  [a] Article → /wiki/Giraffe\n  [a] Talk → /wiki/Talk:Giraffe\n  ...",
+#     "truncated": false
+#   }
+
+# 3. Eval (escape hatch) — run arbitrary JS, get the return value back.
+#    Use this when navigate + snapshot can't express what you need
+#    (e.g. clicking a specific button, reading a table you can't see in
+#    the snapshot tree, scraping with custom selectors).
+curl -X POST -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"code": "return [...document.querySelectorAll(\".title > a\")].slice(0,5).map(a => a.innerText)"}' \
+  http://localhost:3030/connections/browsers/owned-default/eval
+# → {"success": true, "result": [...]}
+```
+
+Default rule: try snapshot first. Switch to eval only when you need a
+specific value the snapshot tree doesn't surface.
+
+Cookies persist across calls (own profile, isolated from the user's
+real browser). Password fields are stripped from snapshot output.
 
 ---
 
@@ -437,7 +480,7 @@ curl -X DELETE http://localhost:3030/memories/1
 
 Parameters for `GET /memories`: `q` (FTS search), `source`, `tags`, `min_importance`, `start_time`, `end_time`, `limit`, `offset`.
 
-Memories also appear in `/search?content_type=memory`.
+Use `/memories` directly — `/search` does not currently surface `content_type=memory` results.
 
 ### Creating Memories
 
